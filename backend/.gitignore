@@ -1,0 +1,21 @@
+node_modules/
+dist/
+coverage/
+
+# Prisma generates its client into node_modules by default (covered above).
+# These cover a custom generator `output` location — generated code is
+# rebuilt by `prisma generate` and must never be committed. The schema and
+# migrations themselves ARE tracked.
+prisma/generated/
+prisma/client/
+
+# Secrets — only the template is committed. The root .gitignore also matches
+# `.env*` at every depth; the negation below is what keeps the template
+# committable, and it must stay last of the three.
+.env
+.env.*
+!.env.example
+
+*.log
+*.tsbuildinfo
+.DS_Store

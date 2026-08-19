@@ -1,0 +1,259 @@
+# ForgeHub Backend
+
+REST + realtime API for the ForgeHub platform. Serves the existing Next.js
+frontend at the repository root (`../src`), which is complete and unchanged.
+
+**Status: Backend Phase 3 (Authentication) complete.** Phases 1–3 have landed:
+infrastructure, the full database schema, and the authentication module.
+Users/profiles, projects, feed, communities, messaging, notifications, search,
+and admin are later phases and are deliberately not implemented.
+
+## Stack
+
+| Concern          | Choice                         |
+| ---------------- | ------------------------------ |
+| Runtime          | Node.js 22 LTS (ESM)           |
+| Language         | TypeScript 5 (strict)          |
+| HTTP             | Express 5                      |
+| Database         | PostgreSQL 17 via Prisma 6     |
+| Cache / pubsub   | Redis 7 via ioredis            |
+| Realtime         | Socket.IO 4                    |
+| Validation       | Zod 4                          |
+| Password hashing | Argon2id via `@node-rs/argon2` |
+| Tokens           | JWT (jose) + opaque refresh    |
+| 2FA              | TOTP via otplib                |
+| Logging          | Pino 10                        |
+| Tests            | Vitest 3 + Supertest 7         |
+| Docs             | OpenAPI 3.1 + Swagger UI       |
+| Container        | Docker + Docker Compose        |
+
+## Quick start
+
+```bash
+cd backend
+cp .env.example .env          # then generate the three secrets — the shipped
+                              # placeholders are rejected at boot on purpose:
+                              #   openssl rand -base64 48   (x3)
+                              # JWT_ACCESS_SECRET / JWT_REFRESH_SECRET /
+                              # TWO_FACTOR_SECRET_KEY
+npm install
+docker compose up -d postgres redis
+npm run prisma:deploy         # apply migrations
+npm run prisma:seed           # development fixtures
+npm run dev
+```
+
+Verify:
+
+```bash
+curl http://localhost:4000/health    # process is alive
+curl http://localhost:4000/ready     # Postgres + Redis reachable
+curl http://localhost:4000/api/v1    # API version mounted
+
+# Sign in as a seeded user (password printed by the seed script)
+curl -X POST http://localhost:4000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"ava@forgehub.dev","password":"DevPassword123","rememberMe":false}'
+```
+
+## Scripts
+
+| Script                    | Purpose                                 |
+| ------------------------- | --------------------------------------- |
+| `npm run dev`             | Watch-mode dev server (tsx)             |
+| `npm run build`           | Compile TypeScript to `dist/`           |
+| `npm start`               | Run the compiled build                  |
+| `npm run typecheck`       | `tsc --noEmit` over src + tests         |
+| `npm test`                | Vitest suite                            |
+| `npm run test:watch`      | Vitest in watch mode                    |
+| `npm run prisma:generate` | Regenerate the Prisma client            |
+| `npm run prisma:migrate`  | Create + apply a dev migration          |
+| `npm run prisma:deploy`   | Apply migrations (CI / production)      |
+| `npm run prisma:seed`     | Load development fixtures               |
+| `npm run prisma:studio`   | Browse the database                     |
+| `npm run db:reset`        | **Destructive** — drop, migrate, reseed |
+| `npm run docker:up`       | Start all compose services              |
+| `npm run docker:down`     | Stop them                               |
+
+## Structure
+
+Follows BACKEND_ARCHITECTURE.md §3–4.
+
+```
+backend/
+  prisma/
+    schema.prisma       48 models, 18 enums — see docs/DATABASE.md
+    migrations/
+    seed.ts             Idempotent development fixtures
+  src/
+    config/
+      env.ts            Zod-validated environment (fails fast at boot)
+      redis.ts          ioredis client + health check
+      cookies.ts        Refresh / 2FA cookie policy
+      openapi.ts        OpenAPI 3.1 document
+    database/
+      prisma.ts         PrismaClient singleton + health check
+    middleware/
+      auth.middleware.ts          requireAuth / optionalAuth
+      role.middleware.ts          RBAC + ownership assertions
+      error.middleware.ts         Centralized error normalization
+      validation.middleware.ts    Zod body/query/params validation
+      security.middleware.ts      Helmet, CORS, request id
+      rate-limit.middleware.ts    Redis-backed rate limiting
+      request-logger.middleware.ts
+    modules/
+      auth/             Phase 3 — routes/controller/service/repository/schema/types
+    repositories/
+      audit.repository.ts         Shared, cross-cutting audit writes
+    integrations/
+      email/            Provider abstraction + console transport
+    sockets/
+      socket.ts         Socket.IO server
+      auth.socket.ts    Handshake authentication
+    types/
+      express.d.ts      `req.user` augmentation
+    utils/
+      password.ts       Argon2id hashing
+      jwt.ts            Access-token signing / verification
+      tokens.ts         Opaque tokens, hashing, backup codes, durations
+      crypto.ts         AES-256-GCM for TOTP secrets
+      totp.ts           TOTP primitives
+      username.ts       Username derivation
+      brute-force.ts    Per-identifier lockout
+      audit.ts          Audit event recording
+      errors.ts         AppError + canonical error codes
+      response.ts       Success / paginated / error envelopes
+      pagination.ts     Offset + cursor pagination helpers
+      logger.ts         Pino instance with secret redaction
+      graceful-shutdown.ts
+    routes/
+      index.ts          v1 router factory; feature routers mount here
+      health.routes.ts  /health, /ready
+    jobs/               BullMQ queues and workers          (later phases)
+    app.ts              Express app factory (testable, no port binding)
+    server.ts           Entrypoint: connect deps, listen, register shutdown
+  tests/                Vitest + Supertest suites
+  docs/
+    DATABASE.md         Schema decisions
+    AUTHENTICATION.md   Auth architecture
+```
+
+Business logic lives in module services, database access in module
+repositories, and controllers stay thin — see `src/modules/README.md` for the
+per-module layout and layer rules.
+
+## API conventions
+
+Every `/api/v1` response uses one envelope (BACKEND_TRD.md §7):
+
+```jsonc
+// success
+{ "success": true, "data": { }, "message": "Operation completed successfully", "error": null }
+
+// collection — large collections are never returned unpaginated (§8)
+{ "success": true, "data": [ ], "message": "…", "error": null,
+  "pagination": { "page": 1, "limit": 20, "total": 100, "totalPages": 5 } }
+
+// failure
+{ "success": false, "data": null,
+  "error": { "code": "VALIDATION_ERROR", "message": "…",
+             "details": [{ "field": "body.email", "message": "Invalid email" }] } }
+```
+
+The envelope is a deliberate superset. BACKEND_TRD.md §7 specifies
+`{ success, data, message }`; the finished frontend already types its
+contract as `{ data, error }` in `src/types/common.ts`. Carrying every key
+satisfies both without changing frontend code.
+
+Clients branch on `error.code` (see `src/utils/errors.ts`), never on
+`error.message`. Stack traces are never serialized, and in production the
+message for any 5xx is replaced with a generic string.
+
+## Endpoints
+
+| Method | Path                   | Purpose                                                   |
+| ------ | ---------------------- | --------------------------------------------------------- |
+| GET    | `/health`              | Liveness. Checks nothing external — always 200 if up.     |
+| GET    | `/ready`               | Readiness. 200 only if Postgres **and** Redis respond.    |
+| GET    | `/api/v1`              | Version discovery.                                        |
+| GET    | `/api/v1/openapi.json` | OpenAPI 3.1 document.                                     |
+| GET    | `/api/v1/docs`         | Swagger UI. Disabled in production.                       |
+| —      | `/api/v1/auth/*`       | 17 authentication endpoints — see docs/AUTHENTICATION.md. |
+
+Probes sit at the root, not under `/api/v1`, so orchestrator config does not
+change when the API version does. They are also registered _before_ the rate
+limiter — a throttled health check would cause false restarts.
+
+## Authentication
+
+Full rationale in [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md). The short
+version:
+
+- **Access token** — short-lived JWT (15m), returned in the JSON body, sent
+  back as `Authorization: Bearer <token>`.
+- **Refresh token** — opaque, rotated on every use, stored only as a keyed
+  hash, and transported **only** as an httpOnly cookie. It never appears in a
+  response body.
+- **Reuse detection** — presenting an already-rotated refresh token revokes
+  the entire session, on the assumption that it leaked.
+- **Sessions** — one per device, listable and individually revocable. Logout
+  and revocation take effect immediately, because every authenticated request
+  re-reads the session.
+- **2FA** — full TOTP enrollment, login challenge, and single-use backup
+  codes. Secrets are encrypted at rest with AES-256-GCM.
+- **RBAC** — the frontend's six roles. `guest` is never persisted.
+- **Brute force** — per-identifier progressive lockout in Redis, separate from
+  the per-source HTTP rate limiter.
+- **No enumeration** — login, registration, password reset, and verification
+  resend all respond identically whether or not an account exists.
+
+## Security foundation
+
+- **Helmet** — CSP (`default-src 'none'`), no framing, no referrer; HSTS in production only.
+- **CORS** — strict allowlist from `CORS_ORIGIN`; credentials enabled for the refresh cookie.
+- **Rate limiting** — Redis-backed so limits hold across replicas and restarts, with a tighter budget on the credential routes.
+- **Body limits** — `BODY_LIMIT` (default 1mb) caps JSON/urlencoded payloads.
+- **Env validation** — the process refuses to boot on invalid config. JWT and 2FA secrets must be ≥32 chars **and must not still be the `.env.example` placeholder**: a long placeholder passes a length check, so `cp .env.example .env` would otherwise start the server on a signing key and an encryption key published in this repository.
+- **Log redaction** — auth headers, cookies, and every password/token/secret field are censored by Pino, at both top level and one level of nesting.
+- **Correlation ids** — every response carries `X-Request-Id`, honoring an upstream value when present.
+- **Audit logging** — 20 security-sensitive actions recorded to an append-only table.
+
+## Docker
+
+`docker compose up -d` provides `backend`, `postgres`, and `redis`. Postgres
+and Redis both use named volumes, so data survives `docker compose down`.
+Credentials come from `.env` — nothing is hardcoded. The backend waits on
+both dependencies' healthchecks before starting, and the image runs as the
+non-root `node` user.
+
+Both build stages use `npm ci --ignore-scripts`, which is why the password
+hasher is `@node-rs/argon2` (prebuilt NAPI binaries) rather than a node-gyp
+module that would need a postinstall step.
+
+## Testing
+
+```bash
+npm test
+```
+
+207 tests across 11 files:
+
+| Suite                      | Covers                                                                             |
+| -------------------------- | ---------------------------------------------------------------------------------- |
+| `health.test.ts`           | Liveness, readiness, dependency-down → 503                                         |
+| `api.test.ts`              | Versioning, envelope, malformed JSON, headers, CORS, OpenAPI                       |
+| `config.test.ts`           | Environment validation and defaults                                                |
+| `pagination.test.ts`       | Offset + cursor helpers                                                            |
+| `database.test.ts`         | Constraints, cascades, restrict/set-null, against real Postgres                    |
+| `auth-unit.test.ts`        | Argon2, JWT, opaque tokens, backup codes, usernames, AES-GCM, TOTP                 |
+| `auth.test.ts`             | Full registration → verify → login → refresh → logout flows, resets, sessions, 2FA |
+| `auth-security.test.ts`    | Credential exposure, log redaction, RBAC, ownership, account status, OpenAPI sync  |
+| `auth-rate-limit.test.ts`  | Per-source HTTP throttling                                                         |
+| `auth-brute-force.test.ts` | Per-identifier lockout against real Redis                                          |
+| `socket-auth.test.ts`      | Socket.IO handshake, room isolation, impersonation attempts                        |
+
+HTTP-only suites mock Postgres and Redis so they stay hermetic. The auth,
+database, and socket suites talk to real infrastructure — `docker compose up -d
+postgres redis` before running them. Everything they create is namespaced and
+removed afterwards, so they are safe to run against a seeded development
+database.

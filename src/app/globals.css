@@ -1,0 +1,282 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   ForgeHub design tokens
+   Source: UI_UX.md §2 Theme, §3 Color Palette, §4 Typography
+   Dark-first: :root ships the (only, for now) dark theme values. A
+   [data-theme="light"] override point is left in place for the Settings →
+   Appearance phase (10_Settings.md) to fill in later — see docs/ASSUMPTIONS.md.
+   ========================================================================== */
+
+:root {
+  /* Surfaces (UI_UX.md §3) */
+  --background: #09090b;
+  --surface: #111214;
+  --card: #18181b;
+  --muted: #1f1f23;
+
+  /* Text on surfaces */
+  --foreground: #fafafa;
+  --surface-foreground: #e4e4e7;
+  --card-foreground: #f4f4f5;
+  --muted-foreground: #a1a1aa;
+
+  /* Borders */
+  --border: rgb(255 255 255 / 8%);
+  --border-strong: rgb(255 255 255 / 14%);
+
+  /* Brand / semantic accents (UI_UX.md §3, exact hex values) */
+  --primary: #7c5cff;
+  --secondary: #00d4ff;
+  --accent: #ffb800;
+  --success: #16c784;
+  --danger: #ff5a5a;
+
+  /* Foreground paired with every accent fill above. Verified >= 4.5:1
+     contrast against each accent color (WCAG AA normal text) — see
+     docs/ASSUMPTIONS.md for the computed ratios. */
+  --on-brand: #0a0a0b;
+
+  --ring: var(--primary);
+
+  /* Shape */
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 24px; /* UI_UX.md §2 "Rounded 24px corners" */
+  --radius-full: 9999px;
+
+  /* Elevation (UI_UX.md §2 "Soft Shadows", "Floating Cards") */
+  --shadow-soft: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px -12px rgb(0 0 0 / 60%);
+  --shadow-floating: 0 24px 64px -16px rgb(0 0 0 / 70%);
+  --shadow-glow-primary:
+    0 0 0 1px rgb(124 92 255 / 20%), 0 8px 32px -8px rgb(124 92 255 / 35%);
+}
+
+@theme inline {
+  /* Colors exposed as Tailwind utilities: bg-background, text-foreground,
+     bg-primary, text-primary-foreground, border-border, etc. */
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-card: var(--card);
+  --color-muted: var(--muted);
+
+  --color-foreground: var(--foreground);
+  --color-surface-foreground: var(--surface-foreground);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--on-brand);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--on-brand);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--on-brand);
+  --color-success: var(--success);
+  --color-success-foreground: var(--on-brand);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--on-brand);
+
+  --color-ring: var(--ring);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-full: var(--radius-full);
+
+  --shadow-soft: var(--shadow-soft);
+  --shadow-floating: var(--shadow-floating);
+  --shadow-glow-primary: var(--shadow-glow-primary);
+
+  /* Typography (UI_UX.md §4) — see src/lib/fonts.ts for the mapping
+     rationale (Inter = UI/body, Space Grotesk = display, Satoshi = accent). */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-space-grotesk), var(--font-inter), ui-sans-serif, sans-serif;
+  --font-accent:
+    "Satoshi", var(--font-space-grotesk), var(--font-inter), ui-sans-serif, sans-serif;
+}
+
+/* Satoshi is not distributed via Google Fonts, so it can't go through
+   next/font/google. Real licensed files (fontshare.com/fonts/satoshi) should
+   be dropped into public/fonts/satoshi/ — until then this rule 404s silently
+   and --font-accent falls back to Space Grotesk. See docs/ASSUMPTIONS.md. */
+@font-face {
+  font-family: "Satoshi";
+  src:
+    url("/fonts/satoshi/Satoshi-Variable.woff2") format("woff2-variations"),
+    url("/fonts/satoshi/Satoshi-Variable.woff2") format("woff2");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+    outline-color: var(--color-ring);
+  }
+
+  html {
+    color-scheme: dark;
+    scroll-behavior: smooth;
+    scroll-padding-top: 5rem;
+  }
+
+  body {
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+  }
+
+  ::selection {
+    background: rgb(124 92 255 / 35%);
+    color: var(--color-foreground);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  /* Glassmorphism (UI_UX.md §2) */
+  .glass {
+    background: rgb(24 24 27 / 60%);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    border: 1px solid var(--color-border);
+  }
+
+  .glass-strong {
+    background: rgb(24 24 27 / 80%);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
+    border: 1px solid var(--color-border-strong);
+  }
+
+  /* Gradient accent text/backgrounds (UI_UX.md §5 "Animated Gradients") */
+  .gradient-brand {
+    background-image: linear-gradient(
+      135deg,
+      var(--color-primary),
+      var(--color-secondary)
+    );
+  }
+
+  .gradient-text-brand {
+    background-image: linear-gradient(
+      135deg,
+      var(--color-primary),
+      var(--color-secondary)
+    );
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 100;
+    padding: 0.75rem 1.25rem;
+    border-radius: var(--radius-md);
+    background: var(--color-primary);
+    color: var(--color-primary-foreground);
+  }
+
+  .skip-link:focus {
+    left: 1rem;
+    top: 1rem;
+  }
+
+  /* Shared open/close animation for Radix overlays (Tooltip, Dialog,
+     DropdownMenu, Select, Popover), keyed off their data-state attribute so
+     one utility covers every primitive without an extra Tailwind plugin. */
+  .animate-forge-pop {
+    animation: forge-pop-in 150ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .animate-forge-pop[data-state="closed"] {
+    animation: forge-pop-out 100ms ease-in;
+  }
+
+  .animate-forge-fade {
+    animation: forge-fade-in 150ms ease-out;
+  }
+
+  .animate-forge-fade[data-state="closed"] {
+    animation: forge-fade-out 100ms ease-in;
+  }
+
+  /* UI_UX.md §8 "Animated Banner" — slow drift on the profile banner's
+     gradient, used when no real bannerUrl exists yet. */
+  .animate-gradient-shift {
+    background-size: 150% 150%;
+    animation: forge-gradient-shift 18s ease-in-out infinite;
+  }
+}
+
+@keyframes forge-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes forge-pop-out {
+  from {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+}
+
+@keyframes forge-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes forge-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes forge-gradient-shift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}

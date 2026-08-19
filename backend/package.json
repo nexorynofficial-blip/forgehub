@@ -1,0 +1,71 @@
+{
+  "name": "forgehub-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ForgeHub backend API — Express + Prisma + Redis + Socket.IO",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
+    "prisma:seed": "prisma db seed",
+    "db:reset": "prisma migrate reset",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f backend"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.1.0",
+    "@prisma/client": "^6.19.1",
+    "compression": "^1.8.1",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.4",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.4.0",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.9.0",
+    "jose": "^6.2.9",
+    "otplib": "^13.4.1",
+    "pino": "^10.1.0",
+    "pino-http": "^11.0.0",
+    "rate-limit-redis": "^4.2.4",
+    "socket.io": "^4.8.2",
+    "swagger-ui-express": "^5.0.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/compression": "^1.8.1",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.10.1",
+    "@types/supertest": "^6.0.3",
+    "@types/swagger-ui-express": "^4.1.8",
+    "pino-pretty": "^13.1.2",
+    "prisma": "^6.19.1",
+    "socket.io-client": "^4.8.3",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.7",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "allowScripts": {
+    "@prisma/engines@6.19.3": true,
+    "esbuild@0.28.2": true,
+    "prisma@6.19.3": true
+  }
+}

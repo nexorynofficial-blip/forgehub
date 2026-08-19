@@ -1,0 +1,97 @@
+# ForgeHub backend — development environment.
+#
+# Credentials come from `.env` (see .env.example); nothing is hardcoded.
+#   docker compose up -d
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: forgehub-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Named volume — data survives `docker compose down`.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # Depends on `service_healthy` below, so this gates backend startup.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: forgehub-redis
+    restart: unless-stopped
+    # Persist to disk so dev state survives a restart.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: forgehub-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${PORT:-4000}
+      HOST: 0.0.0.0
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      # Service names, not localhost — these resolve on the compose network.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?schema=public
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      JWT_ACCESS_EXPIRES: ${JWT_ACCESS_EXPIRES:-15m}
+      JWT_REFRESH_EXPIRES: ${JWT_REFRESH_EXPIRES:-7d}
+      JWT_REFRESH_REMEMBER_EXPIRES: ${JWT_REFRESH_REMEMBER_EXPIRES:-30d}
+      TWO_FACTOR_SECRET_KEY: ${TWO_FACTOR_SECRET_KEY}
+      TOTP_ISSUER: ${TOTP_ISSUER:-ForgeHub}
+      TWO_FACTOR_CHALLENGE_TTL_SECONDS: ${TWO_FACTOR_CHALLENGE_TTL_SECONDS:-300}
+      REFRESH_COOKIE_NAME: ${REFRESH_COOKIE_NAME:-forgehub_refresh}
+      TWO_FACTOR_COOKIE_NAME: ${TWO_FACTOR_COOKIE_NAME:-forgehub_2fa}
+      AUTH_COOKIE_PATH: ${AUTH_COOKIE_PATH:-/api/v1/auth}
+      COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
+      EMAIL_FROM: ${EMAIL_FROM:-ForgeHub <no-reply@forgehub.dev>}
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      EMAIL_VERIFICATION_EXPIRES: ${EMAIL_VERIFICATION_EXPIRES:-24h}
+      PASSWORD_RESET_EXPIRES: ${PASSWORD_RESET_EXPIRES:-1h}
+      RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
+      AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-900000}
+      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-20}
+      AUTH_BRUTE_FORCE_MAX_ATTEMPTS: ${AUTH_BRUTE_FORCE_MAX_ATTEMPTS:-5}
+      AUTH_BRUTE_FORCE_WINDOW_SECONDS: ${AUTH_BRUTE_FORCE_WINDOW_SECONDS:-900}
+      AUTH_BRUTE_FORCE_BASE_LOCK_SECONDS: ${AUTH_BRUTE_FORCE_BASE_LOCK_SECONDS:-60}
+      AUTH_BRUTE_FORCE_MAX_LOCK_SECONDS: ${AUTH_BRUTE_FORCE_MAX_LOCK_SECONDS:-3600}
+      BODY_LIMIT: ${BODY_LIMIT:-1mb}
+      SHUTDOWN_TIMEOUT_MS: ${SHUTDOWN_TIMEOUT_MS:-10000}
+    ports:
+      - "${PORT:-4000}:4000"
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,101 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { Controller, useForm } from "react-hook-form";
+import { Loader2, ShieldCheck } from "lucide-react";
+
+import { routes } from "@/lib/routes";
+import { verifyTwoFactorCode } from "@/lib/services/auth-service";
+import { twoFactorSchema, type TwoFactorValues } from "@/lib/validations/auth";
+import { Button } from "@/components/ui/button";
+import { useToast } from "@/hooks/use-toast";
+import { AuthHeading } from "@/components/auth/auth-heading";
+import { OtpInput } from "@/components/auth/otp-input";
+
+export function TwoFactorForm() {
+  const router = useRouter();
+  const toast = useToast((state) => state.toast);
+  const [isResending, setIsResending] = useState(false);
+  const {
+    control,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<TwoFactorValues>({
+    resolver: zodResolver(twoFactorSchema),
+    defaultValues: { code: "" },
+  });
+
+  async function onSubmit(values: TwoFactorValues) {
+    await verifyTwoFactorCode(values.code);
+    toast({ title: "Verified", description: "Two-factor check passed." });
+    router.push(routes.dashboard);
+  }
+
+  async function handleResend() {
+    setIsResending(true);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    setIsResending(false);
+    toast({ title: "Code sent", description: "A new code is on its way." });
+  }
+
+  return (
+    <div>
+      <div className="bg-primary/15 text-primary mx-auto mb-6 flex size-14 items-center justify-center rounded-full">
+        <ShieldCheck className="size-6" />
+      </div>
+      <AuthHeading
+        title="Two-factor verification"
+        description="Enter the 6-digit code from your authenticator app."
+      />
+
+      <form
+        onSubmit={handleSubmit(onSubmit)}
+        noValidate
+        className="flex flex-col items-center gap-5"
+      >
+        <Controller
+          control={control}
+          name="code"
+          render={({ field }) => (
+            <OtpInput
+              value={field.value}
+              onChange={field.onChange}
+              autoFocus
+              aria-invalid={!!errors.code}
+            />
+          )}
+        />
+        {errors.code && <p className="text-danger text-sm">{errors.code.message}</p>}
+
+        <Button type="submit" size="lg" className="w-full" disabled={isSubmitting}>
+          {isSubmitting && <Loader2 className="size-4 animate-spin" />}
+          Verify
+        </Button>
+      </form>
+
+      <p className="text-muted-foreground mt-6 text-center text-sm">
+        Didn&apos;t get a code?{" "}
+        <button
+          type="button"
+          onClick={handleResend}
+          disabled={isResending}
+          className="text-primary focus-visible:ring-ring rounded-sm font-medium focus-visible:ring-2 focus-visible:outline-none disabled:opacity-50"
+        >
+          {isResending ? "Sending…" : "Resend"}
+        </button>
+      </p>
+
+      <p className="text-muted-foreground mt-2 text-center text-sm">
+        <Link
+          href={routes.auth.login}
+          className="text-primary focus-visible:ring-ring rounded-sm font-medium focus-visible:ring-2 focus-visible:outline-none"
+        >
+          Back to sign in
+        </Link>
+      </p>
+    </div>
+  );
+}

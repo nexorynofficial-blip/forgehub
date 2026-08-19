@@ -1,0 +1,1259 @@
+// ForgeHub — production Prisma schema (Backend Phase 2).
+//
+// Derived from three sources, reconciled in that order of authority:
+//   1. The completed frontend's domain types (`../src/types/*.ts`) — these
+//      are live, rendering code; the API must serve exactly these shapes.
+//   2. PRD.md / BACKEND_PRD.md — product requirements.
+//   3. BACKEND_TRD.md §10 / BACKEND_ARCHITECTURE.md §7 — the entity list.
+//
+// Where they conflicted, the frontend won and the decision is documented
+// inline. See backend/docs/DATABASE.md for the full rationale.
+//
+// Conventions:
+//   - Enum values use the frontend's exact string literals so Prisma results
+//     serialize straight to the client with no mapping layer.
+//   - `deletedAt` marks soft deletion; queries must filter it.
+//   - Denormalized `*Count` columns are deliberate (see DATABASE.md §Counters).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// PRD.md §4.13. The frontend (`types/common.ts`) ships these six values;
+/// BACKEND_TRD.md §14 lists a different four (USER/MODERATOR/ADMIN/
+/// SUPER_ADMIN). The frontend's set is authoritative — it is already
+/// rendered by AppSidebar and AdminGuard.
+enum UserRole {
+  guest
+  member
+  verified_builder
+  moderator
+  community_admin
+  platform_admin
+}
+
+/// Moderation state, orthogonal to UserRole (`types/admin.ts`). A platform
+/// admin can be active/banned independently of their permissions.
+enum ModerationStatus {
+  active
+  banned
+  shadow_banned
+}
+
+enum ProfileVisibility {
+  public
+  followers
+}
+
+enum MessagePermission {
+  everyone
+  followers
+}
+
+enum ProjectStatus {
+  idea
+  in_progress
+  beta
+  launched
+  archived
+}
+
+enum FundingStage {
+  bootstrapped
+  pre_seed
+  seed
+  series_a_plus
+  not_seeking
+}
+
+/// Union of the frontend's three values (`types/project.ts`: owner /
+/// collaborator / contributor) and the five named in BACKEND_PRD.md §7
+/// (Owner / Admin / Developer / Designer / Contributor). Both sets are kept
+/// so existing frontend data stays valid while richer roles become available.
+enum ProjectMemberRole {
+  owner
+  admin
+  developer
+  designer
+  collaborator
+  contributor
+}
+
+enum Visibility {
+  public
+  private
+  unlisted
+}
+
+enum PostType {
+  text
+  image
+  video
+  code
+  markdown
+  poll
+  update
+  milestone
+  announcement
+}
+
+enum MediaType {
+  image
+  video
+}
+
+enum AttachmentType {
+  image
+  file
+  voice
+}
+
+enum CommunityRole {
+  owner
+  admin
+  moderator
+  member
+}
+
+/// Frontend `NotificationType` (`types/notification.ts`) plus the extra
+/// categories BACKEND_PRD.md §14 requires (reply, community invite,
+/// moderation). `invite` is retained for backward compatibility with data the
+/// frontend already renders.
+enum NotificationType {
+  like
+  comment
+  reply
+  mention
+  follower
+  project_update
+  invite
+  project_invite
+  community_invite
+  message
+  achievement
+  moderation
+}
+
+/// Polymorphic target discriminator, shared by notifications, reports,
+/// moderation actions, and audit logs.
+enum EntityType {
+  user
+  post
+  comment
+  project
+  community
+  message
+  conversation
+  achievement
+}
+
+enum ReportTargetType {
+  post
+  comment
+  project
+  community
+  user
+  message
+}
+
+enum ReportReason {
+  spam
+  harassment
+  inappropriate_content
+  impersonation
+  other
+}
+
+enum ReportStatus {
+  pending
+  reviewing
+  resolved
+  dismissed
+}
+
+enum ModerationActionType {
+  warning
+  content_removal
+  suspension
+  ban
+  shadow_ban
+  unban
+  reinstate
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// USERS & IDENTITY
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Credentials, role, and reputation. Presentation fields live on `Profile`
+/// (TRD §10 models them separately); the API joins the two into the single
+/// `User` shape the frontend expects.
+model User {
+  id           String           @id @default(uuid()) @db.Uuid
+  email        String           @unique
+  username     String           @unique
+  /// Argon2id/bcrypt digest. Never a plaintext password, never a token.
+  passwordHash String?
+  displayName  String
+  role         UserRole         @default(member)
+  status       ModerationStatus @default(active)
+
+  emailVerified   Boolean   @default(false)
+  emailVerifiedAt DateTime?
+
+  /// PRD.md §4.10 Reputation System. Counters rather than derived queries —
+  /// the leaderboard sorts on `xp` across the whole table.
+  xp                Int    @default(0)
+  builderRank       String @default("Newcomer")
+  dailyStreak       Int    @default(0)
+  contributionScore Int    @default(0)
+  communityScore    Int    @default(0)
+
+  /// Denormalized fan-out counters. Kept because the feed, profile header,
+  /// and leaderboard all render them on every row; a COUNT per row would be
+  /// an N+1 on the hottest paths. Services must update them in the same
+  /// transaction as the underlying Follow/Project write.
+  followersCount Int @default(0)
+  followingCount Int @default(0)
+  projectsCount  Int @default(0)
+
+  lastActiveAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  /// Soft delete. Hard-deleting a user is not an expected operation —
+  /// content and moderation history must survive account closure.
+  deletedAt    DateTime?
+
+  profile             Profile?
+  settings            UserSettings?
+  twoFactor           TwoFactorCredential?
+  notificationPrefs   NotificationPreference[]
+  sessions            Session[]
+  emailTokens         EmailVerificationToken[]
+  passwordResetTokens PasswordResetToken[]
+
+  following Follow[] @relation("Follower")
+  followers Follow[] @relation("Following")
+
+  blocksMade     Block[] @relation("Blocker")
+  blocksReceived Block[] @relation("Blocked")
+
+  ownedProjects      Project[]         @relation("ProjectOwner")
+  projectMemberships ProjectMember[]
+  projectUpdates     ProjectUpdate[]
+  projectLikes       ProjectLike[]
+  projectFollows     ProjectFollower[]
+
+  posts        Post[]
+  comments     Comment[]
+  postLikes    PostLike[]
+  commentLikes CommentLike[]
+  bookmarks    Bookmark[]
+  pollVotes    PollVote[]
+
+  ownedCommunities     Community[]           @relation("CommunityOwner")
+  communityMemberships CommunityMember[]
+  pinnedCommunityPosts CommunityPinnedPost[]
+
+  conversationsCreated Conversation[]       @relation("ConversationCreator")
+  conversationMembers  ConversationMember[]
+  messages             Message[]
+  messageReactions     MessageReaction[]
+
+  notifications      Notification[] @relation("NotificationRecipient")
+  actedNotifications Notification[] @relation("NotificationActor")
+
+  achievements UserAchievement[]
+  badges       UserBadge[]
+
+  reportsFiled      Report[]           @relation("Reporter")
+  reportsAgainst    Report[]           @relation("ReportedAuthor")
+  reportsReviewed   Report[]           @relation("ReportReviewer")
+  moderationTaken   ModerationAction[] @relation("Moderator")
+  moderationAgainst ModerationAction[] @relation("ModeratedUser")
+  auditLogs         AuditLog[]
+
+  /// Feed/search list users by recency; the leaderboard sorts by xp.
+  @@index([createdAt])
+  @@index([xp(sort: Desc)])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+/// Presentation data (PRD.md §4.2). Split from `User` so credential rows stay
+/// narrow and cacheable, and so a public profile read never touches the
+/// password hash column.
+model Profile {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @db.Uuid
+
+  avatarUrl  String?
+  bannerUrl  String?
+  bio        String  @default("")
+  location   String?
+  websiteUrl String?
+
+  /// Freeform display lists. Kept as native Postgres arrays rather than join
+  /// tables: they are rendered as chips and never queried relationally.
+  /// Discovery-facing taxonomy uses the `Tag` entity instead.
+  skills    String[] @default([])
+  techStack String[] @default([])
+
+  experienceYears   Int?
+  /// Cached 0-100 completeness score driving profile-completion prompts.
+  completionPercent Int               @default(0)
+  visibility        ProfileVisibility @default(public)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  socialLinks SocialLink[]
+
+  @@map("profiles")
+}
+
+model SocialLink {
+  id        String @id @default(uuid()) @db.Uuid
+  profileId String @db.Uuid
+  platform  String
+  url       String
+
+  profile Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  /// One link per platform per profile.
+  @@unique([profileId, platform])
+  @@index([profileId])
+  @@map("social_links")
+}
+
+/// Privacy settings (`types/settings.ts` PrivacySettings). `twoFactorEnabled`
+/// lives on `TwoFactorCredential`, not here, to keep one source of truth.
+model UserSettings {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @db.Uuid
+
+  showEmailOnProfile Boolean           @default(false)
+  whoCanMessage      MessagePermission @default(everyone)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+/// One row per (user, notification type) — mirrors the Settings →
+/// Notifications matrix, so the type list can never drift from PRD.md §4.8.
+model NotificationPreference {
+  id     String           @id @default(uuid()) @db.Uuid
+  userId String           @db.Uuid
+  type   NotificationType
+  inApp  Boolean          @default(true)
+  email  Boolean          @default(false)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type])
+  @@index([userId])
+  @@map("notification_preferences")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUTH INFRASTRUCTURE (tables only — Phase 3 implements the flows)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// A login on one device. Refresh tokens hang off a session so revoking the
+/// session revokes the whole rotation chain (TRD §13).
+model Session {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  userAgent  String?
+  ipAddress  String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime  @default(now())
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+/// Rotating refresh token. Only a hash is stored — a database leak must not
+/// yield usable tokens. `replacedByTokenId` makes the rotation chain
+/// traceable, so reuse of a retired token can be detected as theft.
+model RefreshToken {
+  id                String    @id @default(uuid()) @db.Uuid
+  sessionId         String    @db.Uuid
+  tokenHash         String    @unique
+  expiresAt         DateTime
+  revokedAt         DateTime?
+  replacedByTokenId String?   @db.Uuid
+  createdAt         DateTime  @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model TwoFactorCredential {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @unique @db.Uuid
+  /// Encrypted TOTP secret — never returned by any API.
+  secret      String
+  enabled     Boolean   @default(false)
+  /// Hashed single-use recovery codes.
+  backupCodes String[]  @default([])
+  confirmedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("two_factor_credentials")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SOCIAL GRAPH
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// ARCHITECTURE §10. Self-follows are rejected in the service layer (Postgres
+/// cannot express `followerId <> followingId` as a Prisma-level constraint).
+model Follow {
+  id          String   @id @default(uuid()) @db.Uuid
+  followerId  String   @db.Uuid
+  followingId String   @db.Uuid
+  createdAt   DateTime @default(now())
+
+  follower  User @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  following User @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
+  @@map("follows")
+}
+
+/// BACKEND_PRD.md §3 "Block users"; surfaced by the Settings → Privacy page.
+model Block {
+  id        String   @id @default(uuid()) @db.Uuid
+  blockerId String   @db.Uuid
+  blockedId String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@map("blocks")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TAGS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Shared taxonomy for projects and communities. A real entity (rather than
+/// string arrays) because Phase 10 search filters and counts by tag.
+model Tag {
+  id         String   @id @default(uuid()) @db.Uuid
+  slug       String   @unique
+  name       String
+  usageCount Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  projects    ProjectTag[]
+  communities CommunityTag[]
+
+  @@index([usageCount(sort: Desc)])
+  @@map("tags")
+}
+
+model ProjectTag {
+  projectId String @db.Uuid
+  tagId     String @db.Uuid
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, tagId])
+  @@index([tagId])
+  @@map("project_tags")
+}
+
+model CommunityTag {
+  communityId String @db.Uuid
+  tagId       String @db.Uuid
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  tag       Tag       @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([communityId, tagId])
+  @@index([tagId])
+  @@map("community_tags")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PROJECTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Project {
+  id          String @id @default(uuid()) @db.Uuid
+  /// Public identifier — every frontend project route resolves by slug.
+  slug        String @unique
+  ownerId     String @db.Uuid
+  title       String
+  description String @default("")
+
+  coverImageUrl String?
+  /// Ordered media URLs. A `PostMedia`-style child table is unnecessary here:
+  /// gallery entries carry no metadata and are always read as a whole.
+  gallery       String[] @default([])
+  techStack     String[] @default([])
+
+  status          ProjectStatus @default(idea)
+  fundingStage    FundingStage  @default(not_seeking)
+  /// 0-100. Denormalized from milestone completion for cheap list rendering.
+  progressPercent Int           @default(0)
+  visibility      Visibility    @default(public)
+
+  demoUrl          String?
+  repositoryUrl    String?
+  documentationUrl String?
+
+  /// `ProjectMetrics` in the frontend. Counters for the same reason as
+  /// User's — trending lists render them per row.
+  viewsCount     Int @default(0)
+  likesCount     Int @default(0)
+  followersCount Int @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  owner      User               @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  members    ProjectMember[]
+  milestones ProjectMilestone[]
+  updates    ProjectUpdate[]
+  tags       ProjectTag[]
+  likes      ProjectLike[]
+  followers  ProjectFollower[]
+  posts      Post[]
+
+  @@index([ownerId])
+  @@index([createdAt(sort: Desc)])
+  /// Trending queries filter public/undeleted then sort by likes.
+  @@index([visibility, deletedAt, likesCount(sort: Desc)])
+  @@index([status])
+  @@map("projects")
+}
+
+model ProjectMember {
+  id          String            @id @default(uuid()) @db.Uuid
+  projectId   String            @db.Uuid
+  userId      String            @db.Uuid
+  role        ProjectMemberRole @default(contributor)
+  /// Freeform capability grants beyond the role, for future fine-grained ACL.
+  permissions String[]          @default([])
+  joinedAt    DateTime          @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@index([projectId])
+  @@map("project_members")
+}
+
+model ProjectMilestone {
+  id          String    @id @default(uuid()) @db.Uuid
+  projectId   String    @db.Uuid
+  title       String
+  description String    @default("")
+  isComplete  Boolean   @default(false)
+  targetDate  DateTime?
+  completedAt DateTime?
+  /// Explicit ordering — roadmaps are hand-sequenced, not date-sorted.
+  position    Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, position])
+  @@map("project_milestones")
+}
+
+model ProjectUpdate {
+  id        String    @id @default(uuid()) @db.Uuid
+  projectId String    @db.Uuid
+  authorId  String    @db.Uuid
+  content   String
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author  User    @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([authorId])
+  @@map("project_updates")
+}
+
+model ProjectLike {
+  projectId String   @db.Uuid
+  userId    String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("project_likes")
+}
+
+model ProjectFollower {
+  projectId String   @db.Uuid
+  userId    String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("project_followers")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POSTS & ENGAGEMENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Post {
+  id          String  @id @default(uuid()) @db.Uuid
+  authorId    String  @db.Uuid
+  /// Set when the post is a project update/milestone announcement.
+  projectId   String? @db.Uuid
+  /// Set when the post was published into a community.
+  communityId String? @db.Uuid
+
+  type       PostType   @default(text)
+  content    String     @default("")
+  visibility Visibility @default(public)
+
+  /// `CodeSnippet` in the frontend — two columns rather than a child table,
+  /// since a post carries at most one snippet.
+  codeLanguage String?
+  codeContent  String?
+
+  likesCount    Int @default(0)
+  commentsCount Int @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  author    User       @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  project   Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  community Community? @relation(fields: [communityId], references: [id], onDelete: SetNull)
+
+  media     PostMedia[]
+  poll      Poll?
+  comments  Comment[]
+  likes     PostLike[]
+  bookmarks Bookmark[]
+  pinnedIn  CommunityPinnedPost[]
+
+  @@index([authorId])
+  @@index([createdAt(sort: Desc)])
+  /// The default feed: public + not deleted, newest first.
+  @@index([visibility, deletedAt, createdAt(sort: Desc)])
+  /// "Trending" / "Popular today" sort.
+  @@index([deletedAt, likesCount(sort: Desc)])
+  @@index([projectId])
+  @@index([communityId])
+  @@map("posts")
+}
+
+model PostMedia {
+  id        String    @id @default(uuid()) @db.Uuid
+  postId    String    @db.Uuid
+  url       String
+  type      MediaType @default(image)
+  /// Carousel ordering.
+  position  Int       @default(0)
+  width     Int?
+  height    Int?
+  sizeBytes Int?
+  createdAt DateTime  @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, position])
+  @@map("post_media")
+}
+
+/// PRD.md §4.5 Polls. Absent from the backend entity list but required by the
+/// frontend's `Post.poll` — see DATABASE.md.
+model Poll {
+  id       String    @id @default(uuid()) @db.Uuid
+  postId   String    @unique @db.Uuid
+  question String
+  closesAt DateTime?
+
+  post    Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  options PollOption[]
+  votes   PollVote[]
+
+  @@map("polls")
+}
+
+model PollOption {
+  id        String @id @default(uuid()) @db.Uuid
+  pollId    String @db.Uuid
+  label     String
+  position  Int    @default(0)
+  /// Denormalized tally, kept in step with `PollVote` inside one transaction.
+  voteCount Int    @default(0)
+
+  poll  Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  votes PollVote[]
+
+  @@index([pollId, position])
+  @@map("poll_options")
+}
+
+model PollVote {
+  id        String   @id @default(uuid()) @db.Uuid
+  pollId    String   @db.Uuid
+  optionId  String   @db.Uuid
+  userId    String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  poll   Poll       @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  option PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// One vote per poll per user — the constraint is on `pollId`, not
+  /// `optionId`, so a user cannot vote for two different options.
+  @@unique([pollId, userId])
+  @@index([optionId])
+  @@index([userId])
+  @@map("poll_votes")
+}
+
+/// Single-table adjacency list: a reply points at its parent. Deliberately
+/// not a nested-set/closure table — the UI renders one level of replies, and
+/// the brief calls for avoiding an over-complicated comment architecture.
+model Comment {
+  id              String  @id @default(uuid()) @db.Uuid
+  postId          String  @db.Uuid
+  authorId        String  @db.Uuid
+  parentCommentId String? @db.Uuid
+
+  content    String
+  likesCount Int    @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  post    Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author  User          @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  /// A deleted parent takes its replies with it.
+  parent  Comment?      @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: Cascade)
+  replies Comment[]     @relation("CommentReplies")
+  likes   CommentLike[]
+
+  @@index([postId, createdAt])
+  @@index([authorId])
+  @@index([parentCommentId])
+  @@map("comments")
+}
+
+model PostLike {
+  postId    String   @db.Uuid
+  userId    String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Composite PK doubles as the uniqueness constraint — one like per pair.
+  @@id([postId, userId])
+  @@index([userId])
+  @@map("post_likes")
+}
+
+model CommentLike {
+  commentId String   @db.Uuid
+  userId    String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([commentId, userId])
+  @@index([userId])
+  @@map("comment_likes")
+}
+
+model Bookmark {
+  postId    String   @db.Uuid
+  userId    String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([postId, userId])
+  /// A user's bookmark list is read newest-first.
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("bookmarks")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMMUNITIES
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Community {
+  id          String     @id @default(uuid()) @db.Uuid
+  slug        String     @unique
+  name        String
+  description String     @default("")
+  avatarUrl   String?
+  bannerUrl   String?
+  /// Single primary category (the discovery page's filter tabs).
+  category    String
+  visibility  Visibility @default(public)
+  ownerId     String     @db.Uuid
+
+  memberCount Int @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  owner       User                  @relation("CommunityOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  members     CommunityMember[]
+  rules       CommunityRule[]
+  events      CommunityEvent[]
+  tags        CommunityTag[]
+  posts       Post[]
+  pinnedPosts CommunityPinnedPost[]
+
+  @@index([ownerId])
+  @@index([createdAt(sort: Desc)])
+  @@index([category])
+  @@map("communities")
+}
+
+model CommunityMember {
+  id          String        @id @default(uuid()) @db.Uuid
+  communityId String        @db.Uuid
+  userId      String        @db.Uuid
+  role        CommunityRole @default(member)
+  joinedAt    DateTime      @default(now())
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([communityId, userId])
+  @@index([userId])
+  /// Moderator lists filter by role within a community.
+  @@index([communityId, role])
+  @@map("community_members")
+}
+
+/// Ordered rule text. A child table rather than a string array so rules can
+/// gain titles/links later without a migration of existing data.
+model CommunityRule {
+  id          String   @id @default(uuid()) @db.Uuid
+  communityId String   @db.Uuid
+  content     String
+  position    Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  @@index([communityId, position])
+  @@map("community_rules")
+}
+
+/// Required by the frontend's `Community.events`; absent from the backend
+/// entity list — see DATABASE.md.
+model CommunityEvent {
+  id            String    @id @default(uuid()) @db.Uuid
+  communityId   String    @db.Uuid
+  title         String
+  description   String    @default("")
+  startsAt      DateTime
+  endsAt        DateTime?
+  isOnline      Boolean   @default(true)
+  location      String?
+  attendeeCount Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  /// The dashboard widget queries upcoming events across all communities.
+  @@index([startsAt])
+  @@index([communityId, startsAt])
+  @@map("community_events")
+}
+
+/// Realizes the frontend's `Community.pinnedPostIds`. A join rather than a
+/// flag on `Post` so pin order and the moderator who pinned are recorded.
+model CommunityPinnedPost {
+  communityId String   @db.Uuid
+  postId      String   @db.Uuid
+  pinnedById  String?  @db.Uuid
+  pinnedAt    DateTime @default(now())
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  post      Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  /// Keep the pin if the moderator's account is removed.
+  pinnedBy  User?     @relation(fields: [pinnedById], references: [id], onDelete: SetNull)
+
+  @@id([communityId, postId])
+  @@index([postId])
+  @@map("community_pinned_posts")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MESSAGING (persistence only — Socket.IO delivery is a later phase)
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Conversation {
+  id          String  @id @default(uuid()) @db.Uuid
+  isGroup     Boolean @default(false)
+  /// Group name; null for direct messages, where the UI derives a label from
+  /// the other participants.
+  title       String?
+  createdById String? @db.Uuid
+
+  /// Denormalized so the conversation list can sort without joining messages.
+  lastMessageAt DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  createdBy User?                @relation("ConversationCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  members   ConversationMember[]
+  messages  Message[]
+
+  @@index([lastMessageAt(sort: Desc)])
+  @@map("conversations")
+}
+
+model ConversationMember {
+  id             String    @id @default(uuid()) @db.Uuid
+  conversationId String    @db.Uuid
+  userId         String    @db.Uuid
+  joinedAt       DateTime  @default(now())
+  leftAt         DateTime?
+  isMuted        Boolean   @default(false)
+
+  /// Read state per member. The frontend's `Message.seenByUserIds` is derived
+  /// from these watermarks rather than stored per message — a receipt row per
+  /// (message × member) would grow quadratically in group threads.
+  lastReadAt        DateTime?
+  lastReadMessageId String?   @db.Uuid
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@map("conversation_members")
+}
+
+model Message {
+  id             String @id @default(uuid()) @db.Uuid
+  conversationId String @db.Uuid
+  senderId       String @db.Uuid
+  content        String @default("")
+
+  createdAt DateTime  @default(now())
+  editedAt  DateTime?
+  deletedAt DateTime?
+
+  conversation Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User                @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  attachments  MessageAttachment[]
+  reactions    MessageReaction[]
+
+  /// Thread pagination: newest-first within a conversation.
+  @@index([conversationId, createdAt(sort: Desc)])
+  @@index([senderId])
+  @@index([createdAt])
+  @@map("messages")
+}
+
+model MessageAttachment {
+  id        String         @id @default(uuid()) @db.Uuid
+  messageId String         @db.Uuid
+  url       String
+  type      AttachmentType @default(file)
+  name      String
+  sizeBytes Int?
+  createdAt DateTime       @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+  @@map("message_attachments")
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid()) @db.Uuid
+  messageId String   @db.Uuid
+  userId    String   @db.Uuid
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// A user may add several distinct emoji, but each only once.
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@map("message_reactions")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Notification {
+  id      String           @id @default(uuid()) @db.Uuid
+  userId  String           @db.Uuid
+  /// Null for system-generated notifications (achievements, moderation).
+  actorId String?          @db.Uuid
+  type    NotificationType
+
+  /// Polymorphic target. Not a real FK — the target may be any of several
+  /// tables, and a nullable FK per type would add ten mostly-empty columns.
+  entityType EntityType?
+  entityId   String?     @db.Uuid
+
+  /// Rendered at write time so the list needs no per-row joins to display.
+  message String
+
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  user  User  @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actor User? @relation("NotificationActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  /// The panel query: this user's notifications, newest first.
+  @@index([userId, createdAt(sort: Desc)])
+  /// The unread badge count.
+  @@index([userId, isRead])
+  @@index([actorId])
+  @@map("notifications")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ACHIEVEMENTS & BADGES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Catalog row. Achievements are data, never hardcoded enum members, so new
+/// ones ship without a migration.
+model Achievement {
+  id          String   @id @default(uuid()) @db.Uuid
+  slug        String   @unique
+  name        String
+  description String   @default("")
+  iconUrl     String?
+  category    String?
+  points      Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  users UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  userId        String   @db.Uuid
+  achievementId String   @db.Uuid
+  unlockedAt    DateTime @default(now())
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@id([userId, achievementId])
+  @@index([userId, unlockedAt(sort: Desc)])
+  @@map("user_achievements")
+}
+
+/// Distinct from `Achievement`: badges are assigned status markers (staff,
+/// verified, early adopter) rather than something a user earns by activity.
+model Badge {
+  id        String   @id @default(uuid()) @db.Uuid
+  slug      String   @unique
+  label     String
+  iconUrl   String?
+  createdAt DateTime @default(now())
+
+  users UserBadge[]
+
+  @@map("badges")
+}
+
+model UserBadge {
+  userId    String   @db.Uuid
+  badgeId   String   @db.Uuid
+  awardedAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badge Badge @relation(fields: [badgeId], references: [id], onDelete: Cascade)
+
+  @@id([userId, badgeId])
+  @@map("user_badges")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODERATION & AUDIT
+// ═══════════════════════════════════════════════════════════════════════════
+
+model Report {
+  id             String           @id @default(uuid()) @db.Uuid
+  reporterId     String           @db.Uuid
+  targetType     ReportTargetType
+  /// Polymorphic, like Notification.entityId.
+  targetId       String           @db.Uuid
+  /// Denormalized author of the reported content, so the queue can show and
+  /// action them without resolving the target's table first.
+  targetAuthorId String?          @db.Uuid
+
+  reason  ReportReason
+  details String       @default("")
+  status  ReportStatus @default(pending)
+
+  reviewerId String?   @db.Uuid
+  resolution String?
+  resolvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Restrict: a report must outlive attempts to delete its participants.
+  reporter     User  @relation("Reporter", fields: [reporterId], references: [id], onDelete: Restrict)
+  targetAuthor User? @relation("ReportedAuthor", fields: [targetAuthorId], references: [id], onDelete: SetNull)
+  reviewer     User? @relation("ReportReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  actions ModerationAction[]
+
+  /// The moderation queue: pending first, oldest first.
+  @@index([status, createdAt])
+  @@index([targetType, targetId])
+  @@index([reporterId])
+  @@map("reports")
+}
+
+model ModerationAction {
+  id           String               @id @default(uuid()) @db.Uuid
+  moderatorId  String?              @db.Uuid
+  action       ModerationActionType
+  targetType   EntityType
+  targetId     String               @db.Uuid
+  /// Set when the action targets a person (suspension, ban).
+  targetUserId String?              @db.Uuid
+
+  reason    String    @default("")
+  /// Set for temporary suspensions; null means permanent.
+  expiresAt DateTime?
+  reportId  String?   @db.Uuid
+
+  createdAt DateTime @default(now())
+
+  moderator  User?   @relation("Moderator", fields: [moderatorId], references: [id], onDelete: SetNull)
+  targetUser User?   @relation("ModeratedUser", fields: [targetUserId], references: [id], onDelete: SetNull)
+  report     Report? @relation(fields: [reportId], references: [id], onDelete: SetNull)
+
+  @@index([targetUserId, createdAt(sort: Desc)])
+  @@index([moderatorId])
+  @@index([reportId])
+  @@map("moderation_actions")
+}
+
+/// Append-only security/administrative trail (TRD §29). No `updatedAt` and no
+/// soft delete: rows are written once and never modified. Application roles
+/// must have INSERT/SELECT only.
+model AuditLog {
+  id         String      @id @default(uuid()) @db.Uuid
+  /// Nullable so the log survives deletion of the actor's account.
+  actorId    String?     @db.Uuid
+  /// Free-form verb (USER_LOGIN, ROLE_CHANGED, ...) rather than an enum, so
+  /// new audited actions need no migration.
+  action     String
+  targetType EntityType?
+  targetId   String?     @db.Uuid
+
+  metadata  Json?
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@index([targetType, targetId])
+  @@map("audit_logs")
+}
