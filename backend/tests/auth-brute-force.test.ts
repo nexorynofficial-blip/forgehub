@@ -147,8 +147,19 @@ describe("Account brute-force lockout", () => {
     const lockedGhost = await badLogin(fictional).expect(429);
 
     // Lockout must not become an account-existence oracle.
-    expect(lockedGhost.body.error.code).toBe(lockedReal.body.error.code);
-    expect(lockedGhost.body.error.message).toBe(lockedReal.body.error.message);
+    //
+    // The countdown is normalized out before comparing. It is wall-clock
+    // dependent — the two locks are set milliseconds apart, so under a loaded
+    // parallel test run they can land in different whole seconds. That is
+    // elapsed time, not a signal about whether the account exists, and
+    // asserting on the exact number made this test flaky rather than strict.
+    const shape = (body: { error: { code: string; message: string } }) => ({
+      code: body.error.code,
+      message: body.error.message.replace(/\d+ seconds/, "N seconds"),
+    });
+
+    expect(shape(lockedGhost.body)).toEqual(shape(lockedReal.body));
+    expect(shape(lockedReal.body).message).toMatch(/try again in N seconds/i);
   });
 
   it("clears the counter after a successful sign-in", async () => {

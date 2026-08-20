@@ -41,6 +41,14 @@ export const AuditAction = {
   TWO_FACTOR_DISABLED: "TWO_FACTOR_DISABLED",
   TWO_FACTOR_CHALLENGE_FAILED: "TWO_FACTOR_CHALLENGE_FAILED",
   TWO_FACTOR_BACKUP_CODE_USED: "TWO_FACTOR_BACKUP_CODE_USED",
+
+  /* Phase 4 — users and social graph. Follows are deliberately not audited:
+     they are high-volume ordinary activity, not security events. Blocks are,
+     because they are a safety action a user may later need evidence of. */
+  USERNAME_CHANGED: "USERNAME_CHANGED",
+  PRIVACY_SETTINGS_UPDATED: "PRIVACY_SETTINGS_UPDATED",
+  USER_BLOCKED: "USER_BLOCKED",
+  USER_UNBLOCKED: "USER_UNBLOCKED",
 } as const;
 
 export type AuditActionValue = (typeof AuditAction)[keyof typeof AuditAction];

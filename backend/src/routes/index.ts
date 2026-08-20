@@ -1,6 +1,7 @@
 import { Router } from "express";
 
 import { createAuthRouter } from "../modules/auth/auth.routes.js";
+import { createUserRouter } from "../modules/users/users.routes.js";
 import { successResponse } from "../utils/response.js";
 
 /**
@@ -30,6 +31,9 @@ export function createV1Router(): Router {
   });
 
   router.use("/auth", createAuthRouter());
+  // Users and the social graph share this prefix — the follow/block routes are
+  // all addressed as actions on a user (see `users.routes.ts`).
+  router.use("/users", createUserRouter());
 
   return router;
 }

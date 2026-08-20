@@ -1,0 +1,14 @@
+# Build output and dependencies
+node_modules/
+.next/
+backend/dist/
+backend/coverage/
+
+# Authoritative specification documents — committed verbatim and hash-verified
+# against their external source. Prettier rewrites their section rules and
+# heading indentation, which silently diverges the repository copy from the
+# document of record. They are read, never edited.
+backend/docs/BACKEND_PRD.md
+backend/docs/BACKEND_TRD.md
+backend/docs/BACKEND_ARCHITECTURE.md
+ForgeHub_ClaudeCode_Prompts/

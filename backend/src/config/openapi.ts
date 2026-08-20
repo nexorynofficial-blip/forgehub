@@ -479,6 +479,417 @@ const authPaths: OpenApiObject = {
   },
 };
 
+/* ── User & social-graph paths ──────────────────────────────────────────── */
+
+const USERS_TAG = "Users";
+const SOCIAL_TAG = "Social Graph";
+
+const usernameParam = {
+  name: "username",
+  in: "path",
+  required: true,
+  schema: { type: "string", pattern: "^[a-zA-Z0-9._]+$" },
+} as const;
+
+const cursorParams = [
+  { name: "cursor", in: "query", required: false, schema: { type: "string" } },
+  {
+    name: "limit",
+    in: "query",
+    required: false,
+    schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+  },
+] as const;
+
+const userListResponse = envelopeOf({
+  type: "object",
+  required: ["items", "nextCursor"],
+  properties: {
+    items: { type: "array", items: { $ref: "#/components/schemas/UserPreview" } },
+    nextCursor: { type: ["string", "null"] },
+  },
+});
+
+const userPaths: OpenApiObject = {
+  "/users/me": {
+    get: {
+      tags: [USERS_TAG],
+      summary: "The authenticated user's own profile",
+      security: [{ bearerAuth: [] }],
+      responses: {
+        "200": jsonResponse(
+          "Current user, including owner-only fields",
+          envelopeOf({
+            type: "object",
+            properties: { user: { $ref: "#/components/schemas/CurrentUser" } },
+          }),
+        ),
+        ...errorResponses("401"),
+      },
+    },
+    patch: {
+      tags: [USERS_TAG],
+      summary: "Update the caller's own profile",
+      description:
+        "Accepts the shipped Settings → Account payload. `socialLinks` is a " +
+        "replace set, not a merge. `email` is accepted for form compatibility " +
+        "but rejected with 422 if changed — email changes require verification.",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({
+        type: "object",
+        properties: {
+          displayName: stringField({ minLength: 2, maxLength: 60 }),
+          username: stringField({
+            pattern: "^[a-zA-Z0-9._]+$",
+            minLength: 3,
+            maxLength: 30,
+          }),
+          email: stringField({ format: "email" }),
+          bio: stringField({ maxLength: 280 }),
+          location: { type: ["string", "null"], maxLength: 100 },
+          websiteUrl: { type: ["string", "null"] },
+          experienceYears: { type: ["integer", "null"], minimum: 0, maximum: 60 },
+          skills: { type: "array", items: { type: "string" }, maxItems: 30 },
+          techStack: { type: "array", items: { type: "string" }, maxItems: 30 },
+          socialLinks: {
+            type: "array",
+            maxItems: 10,
+            items: {
+              type: "object",
+              required: ["platform", "url"],
+              properties: { platform: { type: "string" }, url: { type: "string" } },
+            },
+          },
+        },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "Updated profile",
+          envelopeOf({
+            type: "object",
+            properties: { user: { $ref: "#/components/schemas/CurrentUser" } },
+          }),
+        ),
+        ...errorResponses("401", "409", "422"),
+      },
+    },
+  },
+
+  "/users/me/username": {
+    patch: {
+      tags: [USERS_TAG],
+      summary: "Change the caller's username",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({
+        type: "object",
+        required: ["username"],
+        properties: {
+          username: stringField({
+            pattern: "^[a-zA-Z0-9._]+$",
+            minLength: 3,
+            maxLength: 30,
+          }),
+        },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "Username updated",
+          envelopeOf({ type: "object", properties: { username: { type: "string" } } }),
+        ),
+        ...errorResponses("401", "409", "422"),
+      },
+    },
+  },
+
+  "/users/me/settings": {
+    get: {
+      tags: [USERS_TAG],
+      summary: "Privacy settings",
+      security: [{ bearerAuth: [] }],
+      responses: {
+        "200": jsonResponse(
+          "Privacy settings",
+          envelopeOf({
+            type: "object",
+            properties: { settings: { $ref: "#/components/schemas/PrivacySettings" } },
+          }),
+        ),
+        ...errorResponses("401"),
+      },
+    },
+    patch: {
+      tags: [USERS_TAG],
+      summary: "Update privacy settings",
+      description:
+        "`twoFactorEnabled` is readable here but not writable — enabling 2FA " +
+        "requires the Phase 3 enrollment flow and a verified TOTP code.",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({
+        type: "object",
+        properties: {
+          profileVisibility: { type: "string", enum: ["public", "followers"] },
+          showEmailOnProfile: { type: "boolean" },
+          whoCanMessage: { type: "string", enum: ["everyone", "followers"] },
+        },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "Updated settings",
+          envelopeOf({
+            type: "object",
+            properties: { settings: { $ref: "#/components/schemas/PrivacySettings" } },
+          }),
+        ),
+        ...errorResponses("401", "422"),
+      },
+    },
+  },
+
+  "/users/me/notification-preferences": {
+    get: {
+      tags: [USERS_TAG],
+      summary: "Notification preference matrix",
+      description: "Always returns a complete matrix, one row per notification type.",
+      security: [{ bearerAuth: [] }],
+      responses: {
+        "200": jsonResponse(
+          "Preference matrix",
+          envelopeOf({
+            type: "object",
+            properties: {
+              preferences: { $ref: "#/components/schemas/NotificationPreferences" },
+            },
+          }),
+        ),
+        ...errorResponses("401"),
+      },
+    },
+    patch: {
+      tags: [USERS_TAG],
+      summary: "Update one notification preference",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({
+        type: "object",
+        required: ["type"],
+        properties: {
+          type: { type: "string" },
+          inApp: { type: "boolean" },
+          email: { type: "boolean" },
+        },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "Updated matrix",
+          envelopeOf({
+            type: "object",
+            properties: {
+              preferences: { $ref: "#/components/schemas/NotificationPreferences" },
+            },
+          }),
+        ),
+        ...errorResponses("401", "422"),
+      },
+    },
+  },
+
+  "/users/me/blocks": {
+    get: {
+      tags: [SOCIAL_TAG],
+      summary: "Users the caller has blocked",
+      security: [{ bearerAuth: [] }],
+      parameters: [...cursorParams],
+      responses: {
+        "200": jsonResponse("Blocked users", userListResponse),
+        ...errorResponses("401"),
+      },
+    },
+  },
+
+  "/users/{username}": {
+    get: {
+      tags: [USERS_TAG],
+      summary: "Public profile by username",
+      description:
+        "Anonymous callers may read public profiles. A followers-only profile " +
+        "returns a redacted identity shell to non-followers. If the target has " +
+        "blocked the caller the response is 404, indistinguishable from a " +
+        "non-existent account.",
+      parameters: [usernameParam],
+      responses: {
+        "200": jsonResponse(
+          "Profile, full or redacted",
+          envelopeOf({
+            type: "object",
+            properties: {
+              user: {
+                oneOf: [
+                  { $ref: "#/components/schemas/UserProfile" },
+                  { $ref: "#/components/schemas/RedactedUserProfile" },
+                ],
+              },
+              relationship: {
+                oneOf: [{ $ref: "#/components/schemas/Relationship" }, { type: "null" }],
+              },
+            },
+          }),
+        ),
+        ...errorResponses("404", "422"),
+      },
+    },
+  },
+
+  "/users/{username}/achievements": {
+    get: {
+      tags: [USERS_TAG],
+      summary: "Achievements and badges for a profile",
+      description: "Read-only in this phase; the awarding engine is a later phase.",
+      parameters: [usernameParam],
+      responses: {
+        "200": jsonResponse(
+          "Achievements and badges",
+          envelopeOf({
+            type: "object",
+            properties: {
+              achievements: {
+                type: "array",
+                items: { $ref: "#/components/schemas/Achievement" },
+              },
+              badges: { type: "array", items: { $ref: "#/components/schemas/Badge" } },
+            },
+          }),
+        ),
+        ...errorResponses("403", "404", "422"),
+      },
+    },
+  },
+
+  "/users/{username}/followers": {
+    get: {
+      tags: [SOCIAL_TAG],
+      summary: "Followers of a user",
+      description:
+        "Subject to the target's profile visibility — a followers-only profile " +
+        "does not expose its follower list to non-followers.",
+      parameters: [usernameParam, ...cursorParams],
+      responses: {
+        "200": jsonResponse("Followers", userListResponse),
+        ...errorResponses("404", "422"),
+      },
+    },
+  },
+
+  "/users/{username}/following": {
+    get: {
+      tags: [SOCIAL_TAG],
+      summary: "Users a user follows",
+      parameters: [usernameParam, ...cursorParams],
+      responses: {
+        "200": jsonResponse("Following", userListResponse),
+        ...errorResponses("404", "422"),
+      },
+    },
+  },
+
+  "/users/{username}/relationship": {
+    get: {
+      tags: [SOCIAL_TAG],
+      summary: "Relationship between the caller and another user",
+      security: [{ bearerAuth: [] }],
+      parameters: [usernameParam],
+      responses: {
+        "200": jsonResponse(
+          "Relationship state",
+          envelopeOf({
+            type: "object",
+            properties: {
+              relationship: { $ref: "#/components/schemas/Relationship" },
+            },
+          }),
+        ),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/users/{username}/follow": {
+    post: {
+      tags: [SOCIAL_TAG],
+      summary: "Follow a user",
+      description:
+        "Not idempotent — following twice is a 409. Self-follow is rejected. " +
+        "A block in either direction answers 404 rather than disclosing it.",
+      security: [{ bearerAuth: [] }],
+      parameters: [usernameParam],
+      responses: {
+        "201": jsonResponse(
+          "Followed",
+          envelopeOf({ $ref: "#/components/schemas/FollowResult" }),
+        ),
+        ...errorResponses("401", "404", "409", "422"),
+      },
+    },
+    delete: {
+      tags: [SOCIAL_TAG],
+      summary: "Unfollow a user",
+      description: "Idempotent — unfollowing someone you do not follow succeeds.",
+      security: [{ bearerAuth: [] }],
+      parameters: [usernameParam],
+      responses: {
+        "200": jsonResponse(
+          "Unfollowed",
+          envelopeOf({ $ref: "#/components/schemas/FollowResult" }),
+        ),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/users/{username}/block": {
+    post: {
+      tags: [SOCIAL_TAG],
+      summary: "Block a user",
+      description:
+        "Removes follows in BOTH directions and creates the block in one " +
+        "transaction. Blocking an already-blocked user is a 409.",
+      security: [{ bearerAuth: [] }],
+      parameters: [usernameParam],
+      responses: {
+        "201": jsonResponse(
+          "Blocked",
+          envelopeOf({
+            type: "object",
+            properties: {
+              blocking: { type: "boolean" },
+              followsRemoved: { type: "integer", minimum: 0 },
+            },
+          }),
+        ),
+        ...errorResponses("401", "404", "409", "422"),
+      },
+    },
+    delete: {
+      tags: [SOCIAL_TAG],
+      summary: "Unblock a user",
+      description: "Does NOT restore follows the block removed.",
+      security: [{ bearerAuth: [] }],
+      parameters: [usernameParam],
+      responses: {
+        "200": jsonResponse(
+          "Unblocked",
+          envelopeOf({
+            type: "object",
+            properties: {
+              blocking: { type: "boolean" },
+              followsRemoved: { type: "integer", minimum: 0 },
+            },
+          }),
+        ),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+};
+
 export const openApiDocument: OpenApiDocument = {
   openapi: "3.1.0",
   info: {
@@ -494,6 +905,8 @@ export const openApiDocument: OpenApiDocument = {
     { name: AUTH_TAG, description: "Registration, sign-in, tokens, and credentials" },
     { name: SESSION_TAG, description: "Device session management" },
     { name: TWO_FACTOR_TAG, description: "TOTP enrollment and login challenges" },
+    { name: USERS_TAG, description: "Profiles, settings, and preferences" },
+    { name: SOCIAL_TAG, description: "Follows, followers, and blocking" },
   ],
   components: {
     securitySchemes: {
@@ -645,6 +1058,209 @@ export const openApiDocument: OpenApiDocument = {
         },
       },
 
+      Achievement: {
+        type: "object",
+        required: ["id", "name", "description", "iconUrl", "unlockedAt"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          name: { type: "string" },
+          description: { type: "string" },
+          iconUrl: { type: ["string", "null"] },
+          unlockedAt: { type: ["string", "null"], format: "date-time" },
+        },
+      },
+
+      Badge: {
+        type: "object",
+        required: ["id", "label", "iconUrl"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          label: { type: "string" },
+          iconUrl: { type: ["string", "null"] },
+        },
+      },
+
+      /**
+       * Mirrors the shipped frontend's `User` (`src/types/user.ts`) field for
+       * field. `email` is null unless the viewer is the owner, an admin, or
+       * the owner enabled `showEmailOnProfile`.
+       */
+      UserProfile: {
+        type: "object",
+        required: [
+          "id",
+          "username",
+          "displayName",
+          "email",
+          "avatarUrl",
+          "bannerUrl",
+          "bio",
+          "skills",
+          "techStack",
+          "socialLinks",
+          "experienceYears",
+          "achievements",
+          "badges",
+          "followersCount",
+          "followingCount",
+          "projectsCount",
+          "role",
+          "xp",
+          "builderRank",
+          "dailyStreak",
+          "contributionScore",
+          "communityScore",
+          "createdAt",
+        ],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          username: { type: "string" },
+          displayName: { type: "string" },
+          email: { type: ["string", "null"], format: "email" },
+          avatarUrl: { type: ["string", "null"] },
+          bannerUrl: { type: ["string", "null"] },
+          bio: { type: "string" },
+          skills: { type: "array", items: { type: "string" } },
+          techStack: { type: "array", items: { type: "string" } },
+          socialLinks: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["platform", "url"],
+              properties: { platform: { type: "string" }, url: { type: "string" } },
+            },
+          },
+          experienceYears: { type: ["integer", "null"] },
+          achievements: {
+            type: "array",
+            items: { $ref: "#/components/schemas/Achievement" },
+          },
+          badges: { type: "array", items: { $ref: "#/components/schemas/Badge" } },
+          followersCount: { type: "integer", minimum: 0 },
+          followingCount: { type: "integer", minimum: 0 },
+          projectsCount: { type: "integer", minimum: 0 },
+          role: {
+            type: "string",
+            enum: [
+              "guest",
+              "member",
+              "verified_builder",
+              "moderator",
+              "community_admin",
+              "platform_admin",
+            ],
+          },
+          xp: { type: "integer" },
+          builderRank: { type: "string" },
+          dailyStreak: { type: "integer" },
+          contributionScore: { type: "integer" },
+          communityScore: { type: "integer" },
+          createdAt: { type: "string", format: "date-time" },
+        },
+      },
+
+      /** What a non-follower sees of a followers-only profile. Identity only. */
+      RedactedUserProfile: {
+        type: "object",
+        required: ["id", "username", "displayName", "role", "builderRank", "restricted"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          username: { type: "string" },
+          displayName: { type: "string" },
+          avatarUrl: { type: ["string", "null"] },
+          bannerUrl: { type: ["string", "null"] },
+          role: { type: "string" },
+          builderRank: { type: "string" },
+          followersCount: { type: "integer", minimum: 0 },
+          followingCount: { type: "integer", minimum: 0 },
+          projectsCount: { type: "integer", minimum: 0 },
+          createdAt: { type: "string", format: "date-time" },
+          restricted: { type: "boolean", const: true },
+        },
+      },
+
+      CurrentUser: {
+        allOf: [
+          { $ref: "#/components/schemas/UserProfile" },
+          {
+            type: "object",
+            required: ["emailVerified", "profileCompletion", "profileVisibility"],
+            properties: {
+              emailVerified: { type: "boolean" },
+              profileCompletion: { type: "integer", minimum: 0, maximum: 100 },
+              profileVisibility: { type: "string", enum: ["public", "followers"] },
+            },
+          },
+        ],
+      },
+
+      /** Mirrors the frontend's `FollowerPreview` (`src/types/profile.ts`). */
+      UserPreview: {
+        type: "object",
+        required: ["id", "username", "displayName", "avatarUrl"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          username: { type: "string" },
+          displayName: { type: "string" },
+          avatarUrl: { type: ["string", "null"] },
+        },
+      },
+
+      /**
+       * Viewer-relative. There is deliberately no `isBlockedBy` — a profile
+       * whose owner blocked the viewer resolves to 404 instead.
+       */
+      Relationship: {
+        type: "object",
+        required: ["isSelf", "isFollowing", "isFollowedBy", "isBlocking"],
+        properties: {
+          isSelf: { type: "boolean" },
+          isFollowing: { type: "boolean" },
+          isFollowedBy: { type: "boolean" },
+          isBlocking: { type: "boolean" },
+        },
+      },
+
+      FollowResult: {
+        type: "object",
+        required: ["following", "followersCount", "relationship"],
+        properties: {
+          following: { type: "boolean" },
+          followersCount: { type: "integer", minimum: 0 },
+          relationship: { $ref: "#/components/schemas/Relationship" },
+        },
+      },
+
+      /** Mirrors the frontend's `PrivacySettings` (`src/types/settings.ts`). */
+      PrivacySettings: {
+        type: "object",
+        required: [
+          "profileVisibility",
+          "showEmailOnProfile",
+          "whoCanMessage",
+          "twoFactorEnabled",
+        ],
+        properties: {
+          profileVisibility: { type: "string", enum: ["public", "followers"] },
+          showEmailOnProfile: { type: "boolean" },
+          whoCanMessage: { type: "string", enum: ["everyone", "followers"] },
+          twoFactorEnabled: {
+            type: "boolean",
+            description: "Read-only here; owned by the 2FA enrollment flow.",
+          },
+        },
+      },
+
+      /** `Record<NotificationType, { inApp, email }>`. */
+      NotificationPreferences: {
+        type: "object",
+        additionalProperties: {
+          type: "object",
+          required: ["inApp", "email"],
+          properties: { inApp: { type: "boolean" }, email: { type: "boolean" } },
+        },
+      },
+
       Session: {
         type: "object",
         required: ["id", "createdAt", "lastUsedAt", "expiresAt", "current"],
@@ -687,6 +1303,7 @@ export const openApiDocument: OpenApiDocument = {
       },
     },
     ...authPaths,
+    ...userPaths,
   },
 };
 

@@ -3,10 +3,11 @@
 REST + realtime API for the ForgeHub platform. Serves the existing Next.js
 frontend at the repository root (`../src`), which is complete and unchanged.
 
-**Status: Backend Phase 3 (Authentication) complete.** Phases 1–3 have landed:
-infrastructure, the full database schema, and the authentication module.
-Users/profiles, projects, feed, communities, messaging, notifications, search,
-and admin are later phases and are deliberately not implemented.
+**Status: Backend Phase 4 (Users & Social Graph) complete.** Phases 1–4 have
+landed: infrastructure, the full database schema, authentication, and the
+users/profiles + follow-graph vertical slice. Projects, feed, communities,
+messaging, notifications, search, and admin are later phases and are
+deliberately not implemented.
 
 ## Stack
 
@@ -103,6 +104,10 @@ backend/
       request-logger.middleware.ts
     modules/
       auth/             Phase 3 — routes/controller/service/repository/schema/types
+      users/            Phase 4 — profiles, settings, preferences, projection layer
+      follows/          Phase 4 — follow graph and blocking
+    ports/
+      notification.port.ts        Seam for Phase 9; no-op for now
     repositories/
       audit.repository.ts         Shared, cross-cutting audit writes
     integrations/
@@ -134,8 +139,9 @@ backend/
     server.ts           Entrypoint: connect deps, listen, register shutdown
   tests/                Vitest + Supertest suites
   docs/
-    DATABASE.md         Schema decisions
-    AUTHENTICATION.md   Auth architecture
+    DATABASE.md                 Schema decisions
+    AUTHENTICATION.md           Auth architecture
+    USERS_AND_SOCIAL_GRAPH.md   Privacy, projection, blocking, counters
 ```
 
 Business logic lives in module services, database access in module
@@ -171,14 +177,15 @@ message for any 5xx is replaced with a generic string.
 
 ## Endpoints
 
-| Method | Path                   | Purpose                                                   |
-| ------ | ---------------------- | --------------------------------------------------------- |
-| GET    | `/health`              | Liveness. Checks nothing external — always 200 if up.     |
-| GET    | `/ready`               | Readiness. 200 only if Postgres **and** Redis respond.    |
-| GET    | `/api/v1`              | Version discovery.                                        |
-| GET    | `/api/v1/openapi.json` | OpenAPI 3.1 document.                                     |
-| GET    | `/api/v1/docs`         | Swagger UI. Disabled in production.                       |
-| —      | `/api/v1/auth/*`       | 17 authentication endpoints — see docs/AUTHENTICATION.md. |
+| Method | Path                   | Purpose                                                                              |
+| ------ | ---------------------- | ------------------------------------------------------------------------------------ |
+| GET    | `/health`              | Liveness. Checks nothing external — always 200 if up.                                |
+| GET    | `/ready`               | Readiness. 200 only if Postgres **and** Redis respond.                               |
+| GET    | `/api/v1`              | Version discovery.                                                                   |
+| GET    | `/api/v1/openapi.json` | OpenAPI 3.1 document.                                                                |
+| GET    | `/api/v1/docs`         | Swagger UI. Disabled in production.                                                  |
+| —      | `/api/v1/auth/*`       | 17 authentication endpoints — see docs/AUTHENTICATION.md.                            |
+| —      | `/api/v1/users/*`      | 12 profile / settings / social-graph endpoints — see docs/USERS_AND_SOCIAL_GRAPH.md. |
 
 Probes sit at the root, not under `/api/v1`, so orchestrator config does not
 change when the API version does. They are also registered _before_ the rate
@@ -236,7 +243,7 @@ module that would need a postinstall step.
 npm test
 ```
 
-207 tests across 11 files:
+336 tests across 15 files:
 
 | Suite                      | Covers                                                                             |
 | -------------------------- | ---------------------------------------------------------------------------------- |
@@ -251,6 +258,10 @@ npm test
 | `auth-rate-limit.test.ts`  | Per-source HTTP throttling                                                         |
 | `auth-brute-force.test.ts` | Per-identifier lockout against real Redis                                          |
 | `socket-auth.test.ts`      | Socket.IO handshake, room isolation, impersonation attempts                        |
+| `users-unit.test.ts`       | Username rules, visibility resolution, email exposure, profile completion          |
+| `users.test.ts`            | Profile read/update, username change, settings, notification preferences           |
+| `follows.test.ts`          | Follow/unfollow, blocking, pagination, counters under real concurrency             |
+| `users-security.test.ts`   | Ownership, followers-only redaction, block opacity, admin override, projection     |
 
 HTTP-only suites mock Postgres and Redis so they stay hermetic. The auth,
 database, and socket suites talk to real infrastructure — `docker compose up -d
