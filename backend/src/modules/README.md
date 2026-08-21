@@ -31,7 +31,7 @@ explicitly permits a better structure; this is one. Name them after the module
 - **Services own authorization decisions**, not just data shuffling.
 
 Shared functionality (logging, errors, pagination, response envelope,
-middleware, Prisma/Redis clients) stays *outside* modules, in `utils/`,
+middleware, Prisma/Redis clients) stays _outside_ modules, in `utils/`,
 `middleware/`, `config/`, and `database/`.
 
 ## Planned modules
@@ -39,23 +39,23 @@ middleware, Prisma/Redis clients) stays *outside* modules, in `utils/`,
 Per BACKEND_TRD.md §4, in the phase order defined by
 BACKEND_ARCHITECTURE.md §38:
 
-| Module          | Phase | Status |
-| --------------- | ----- | -------- |
-| `auth`          | 3     | **done** |
-| `users`         | 4     | **done** — absorbs `profiles` |
-| `follows`       | 4     | **done** — absorbs blocking |
-| `projects`      | 5     |          |
-| `posts`         | 6     |          |
-| `comments`      | 6     |          |
-| `communities`   | 7     |          |
-| `messages`      | 8     |          |
-| `notifications` | 9     |          |
-| `search`        | 10    |          |
-| `achievements`  | 10    |          |
-| `moderation`    | 11    |          |
-| `admin`         | 11    |          |
-| `uploads`       | 11    |          |
-| `ai`            | 12    |          |
+| Module          | Phase | Status                                             |
+| --------------- | ----- | -------------------------------------------------- |
+| `auth`          | 3     | **done**                                           |
+| `users`         | 4     | **done** — absorbs `profiles`                      |
+| `follows`       | 4     | **done** — absorbs blocking                        |
+| `projects`      | 5     | **done** — members, roadmap, changelog, engagement |
+| `posts`         | 6     |                                                    |
+| `comments`      | 6     |                                                    |
+| `communities`   | 7     |                                                    |
+| `messages`      | 8     |                                                    |
+| `notifications` | 9     |                                                    |
+| `search`        | 10    |                                                    |
+| `achievements`  | 10    |                                                    |
+| `moderation`    | 11    |                                                    |
+| `admin`         | 11    |                                                    |
+| `uploads`       | 11    |                                                    |
+| `ai`            | 12    |                                                    |
 
 Two deviations from TRD §4's module list, both deliberate:
 
@@ -64,20 +64,30 @@ Two deviations from TRD §4's module list, both deliberate:
   repositories behind a single response.
 - **`follows` moved from Phase 6 to Phase 4**, and absorbs `Block`. The
   earlier assignment was wrong: `feed-service.ts` filters the "following" feed
-  through the follow graph, so the graph has to exist *before* the feed, not
+  through the follow graph, so the graph has to exist _before_ the feed, not
   alongside it. Blocking lives here because it is the inverse relationship and
   shares the same integrity rules.
+
+`projects` keeps the whole aggregate — members, milestones, updates, and
+engagement — in one module, but varies the file shape above: **one repository**
+for the root and every child (milestone writes and the `progressPercent` they
+derive must share a transaction), with **a service and controller per child**
+where the business rules genuinely differ. See `docs/PROJECTS.md`.
 
 ## Cross-module dependencies
 
 Modules may depend on those above them, never below:
 
 ```
-auth  ──►  (nothing)
-users ──►  follows        (profile visibility consults the social graph)
-follows ─► users          (targets are resolved by username; previews reuse
+auth     ──►  (nothing)
+users    ──►  follows     (profile visibility consults the social graph)
+follows  ──►  users       (targets are resolved by username; previews reuse
                            the shared user projection)
+projects ──►  users       (owners/members/authors reuse `toUserSummary`)
+projects ──►  follows     (a blocked viewer cannot see the blocker's projects)
 ```
+
+`projects` depends on both, and neither depends on it.
 
 `users` and `follows` reference each other's **repositories and pure helpers**,
 not each other's services, which keeps the cycle out of the business layer.

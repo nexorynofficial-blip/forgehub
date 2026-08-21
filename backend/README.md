@@ -3,11 +3,11 @@
 REST + realtime API for the ForgeHub platform. Serves the existing Next.js
 frontend at the repository root (`../src`), which is complete and unchanged.
 
-**Status: Backend Phase 4 (Users & Social Graph) complete.** Phases 1–4 have
-landed: infrastructure, the full database schema, authentication, and the
-users/profiles + follow-graph vertical slice. Projects, feed, communities,
-messaging, notifications, search, and admin are later phases and are
-deliberately not implemented.
+**Status: Backend Phase 5 (Projects) complete.** Phases 1–5 have landed:
+infrastructure, the full database schema, authentication, the users/profiles +
+follow-graph slice, and the project aggregate — members, roadmap, changelog,
+and engagement. Feed, communities, messaging, notifications, search, and admin
+are later phases and are deliberately not implemented.
 
 ## Stack
 
@@ -106,6 +106,7 @@ backend/
       auth/             Phase 3 — routes/controller/service/repository/schema/types
       users/            Phase 4 — profiles, settings, preferences, projection layer
       follows/          Phase 4 — follow graph and blocking
+      projects/         Phase 5 — projects, members, milestones, updates, engagement
     ports/
       notification.port.ts        Seam for Phase 9; no-op for now
     repositories/
@@ -124,6 +125,7 @@ backend/
       crypto.ts         AES-256-GCM for TOTP secrets
       totp.ts           TOTP primitives
       username.ts       Username derivation
+      slug.ts           Project slug derivation
       brute-force.ts    Per-identifier lockout
       audit.ts          Audit event recording
       errors.ts         AppError + canonical error codes
@@ -142,6 +144,7 @@ backend/
     DATABASE.md                 Schema decisions
     AUTHENTICATION.md           Auth architecture
     USERS_AND_SOCIAL_GRAPH.md   Privacy, projection, blocking, counters
+    PROJECTS.md                 Visibility, permissions, derived progress, counters
 ```
 
 Business logic lives in module services, database access in module
@@ -186,6 +189,7 @@ message for any 5xx is replaced with a generic string.
 | GET    | `/api/v1/docs`         | Swagger UI. Disabled in production.                                                  |
 | —      | `/api/v1/auth/*`       | 17 authentication endpoints — see docs/AUTHENTICATION.md.                            |
 | —      | `/api/v1/users/*`      | 12 profile / settings / social-graph endpoints — see docs/USERS_AND_SOCIAL_GRAPH.md. |
+| —      | `/api/v1/projects/*`   | 24 operations over 13 paths, plus `/users/:username/projects`. See docs/PROJECTS.md. |
 
 Probes sit at the root, not under `/api/v1`, so orchestrator config does not
 change when the API version does. They are also registered _before_ the rate
@@ -243,25 +247,32 @@ module that would need a postinstall step.
 npm test
 ```
 
-336 tests across 15 files:
+524 tests across 22 files:
 
-| Suite                      | Covers                                                                             |
-| -------------------------- | ---------------------------------------------------------------------------------- |
-| `health.test.ts`           | Liveness, readiness, dependency-down → 503                                         |
-| `api.test.ts`              | Versioning, envelope, malformed JSON, headers, CORS, OpenAPI                       |
-| `config.test.ts`           | Environment validation and defaults                                                |
-| `pagination.test.ts`       | Offset + cursor helpers                                                            |
-| `database.test.ts`         | Constraints, cascades, restrict/set-null, against real Postgres                    |
-| `auth-unit.test.ts`        | Argon2, JWT, opaque tokens, backup codes, usernames, AES-GCM, TOTP                 |
-| `auth.test.ts`             | Full registration → verify → login → refresh → logout flows, resets, sessions, 2FA |
-| `auth-security.test.ts`    | Credential exposure, log redaction, RBAC, ownership, account status, OpenAPI sync  |
-| `auth-rate-limit.test.ts`  | Per-source HTTP throttling                                                         |
-| `auth-brute-force.test.ts` | Per-identifier lockout against real Redis                                          |
-| `socket-auth.test.ts`      | Socket.IO handshake, room isolation, impersonation attempts                        |
-| `users-unit.test.ts`       | Username rules, visibility resolution, email exposure, profile completion          |
-| `users.test.ts`            | Profile read/update, username change, settings, notification preferences           |
-| `follows.test.ts`          | Follow/unfollow, blocking, pagination, counters under real concurrency             |
-| `users-security.test.ts`   | Ownership, followers-only redaction, block opacity, admin override, projection     |
+| Suite                          | Covers                                                                             |
+| ------------------------------ | ---------------------------------------------------------------------------------- |
+| `health.test.ts`               | Liveness, readiness, dependency-down → 503                                         |
+| `api.test.ts`                  | Versioning, envelope, malformed JSON, headers, CORS, OpenAPI                       |
+| `config.test.ts`               | Environment validation and defaults                                                |
+| `pagination.test.ts`           | Offset + cursor helpers                                                            |
+| `database.test.ts`             | Constraints, cascades, restrict/set-null, against real Postgres                    |
+| `auth-unit.test.ts`            | Argon2, JWT, opaque tokens, backup codes, usernames, AES-GCM, TOTP                 |
+| `auth.test.ts`                 | Full registration → verify → login → refresh → logout flows, resets, sessions, 2FA |
+| `auth-security.test.ts`        | Credential exposure, log redaction, RBAC, ownership, account status, OpenAPI sync  |
+| `auth-rate-limit.test.ts`      | Per-source HTTP throttling                                                         |
+| `auth-brute-force.test.ts`     | Per-identifier lockout against real Redis                                          |
+| `socket-auth.test.ts`          | Socket.IO handshake, room isolation, impersonation attempts                        |
+| `users-unit.test.ts`           | Username rules, visibility resolution, email exposure, profile completion          |
+| `users.test.ts`                | Profile read/update, username change, settings, notification preferences           |
+| `follows.test.ts`              | Follow/unfollow, blocking, pagination, counters under real concurrency             |
+| `users-security.test.ts`       | Ownership, followers-only redaction, block opacity, admin override, projection     |
+| `projects-unit.test.ts`        | Slug derivation, project visibility, the permission table, write schemas           |
+| `projects.test.ts`             | Create → read → patch → soft-delete, slugs, tags, transfer, listings, trending     |
+| `project-members.test.ts`      | Team CRUD, leaving, role rules, and the ownership no-drift guards                  |
+| `project-roadmap.test.ts`      | Milestones and `progressPercent` derived transactionally from them                 |
+| `project-updates.test.ts`      | Changelog with cursor paging, plus likes, followers, and deduplicated views        |
+| `projects-security.test.ts`    | Private/unlisted 404s, blocking, admin override, projection leaks, OpenAPI sync    |
+| `projects-concurrency.test.ts` | Counters, slug races, and lost updates under real parallel requests                |
 
 HTTP-only suites mock Postgres and Redis so they stay hermetic. The auth,
 database, and socket suites talk to real infrastructure — `docker compose up -d

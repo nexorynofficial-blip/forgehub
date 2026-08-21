@@ -1,6 +1,7 @@
 import { Router } from "express";
 
 import { createAuthRouter } from "../modules/auth/auth.routes.js";
+import { createProjectRouter } from "../modules/projects/projects.routes.js";
 import { createUserRouter } from "../modules/users/users.routes.js";
 import { successResponse } from "../utils/response.js";
 
@@ -32,8 +33,11 @@ export function createV1Router(): Router {
 
   router.use("/auth", createAuthRouter());
   // Users and the social graph share this prefix — the follow/block routes are
-  // all addressed as actions on a user (see `users.routes.ts`).
+  // all addressed as actions on a user (see `users.routes.ts`). The users
+  // router also mounts `/users/:username/projects`, which belongs to the
+  // projects module but is addressed as a property of a profile.
   router.use("/users", createUserRouter());
+  router.use("/projects", createProjectRouter());
 
   return router;
 }

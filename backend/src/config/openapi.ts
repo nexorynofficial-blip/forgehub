@@ -890,6 +890,628 @@ const userPaths: OpenApiObject = {
   },
 };
 
+/* ── Project paths ──────────────────────────────────────────────────────── */
+
+const PROJECTS_TAG = "Projects";
+const PROJECT_TEAM_TAG = "Project Team";
+const PROJECT_ROADMAP_TAG = "Project Roadmap";
+const PROJECT_ENGAGEMENT_TAG = "Project Engagement";
+
+/** Slug only — there is deliberately no UUID fallback (decision J2). */
+const slugParam = {
+  name: "slug",
+  in: "path",
+  required: true,
+  schema: { type: "string", pattern: "^[a-z0-9-]+$" },
+} as const;
+
+const childIdParam = {
+  name: "id",
+  in: "path",
+  required: true,
+  schema: { type: "string", format: "uuid" },
+} as const;
+
+const offsetParams = [
+  {
+    name: "page",
+    in: "query",
+    required: false,
+    schema: { type: "integer", minimum: 1, default: 1 },
+  },
+  {
+    name: "limit",
+    in: "query",
+    required: false,
+    schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+  },
+] as const;
+
+/** Sort keys are whitelisted to indexed columns; see `projects.schema.ts`. */
+const sortParam = {
+  name: "sort",
+  in: "query",
+  required: false,
+  schema: {
+    type: "string",
+    enum: ["recent", "trending", "progress", "updated"],
+    default: "recent",
+  },
+} as const;
+
+const projectRef = { $ref: "#/components/schemas/Project" };
+
+const projectListResponse = {
+  allOf: [
+    { $ref: "#/components/schemas/SuccessEnvelope" },
+    {
+      type: "object",
+      required: ["pagination"],
+      properties: {
+        data: { type: "array", items: projectRef },
+        pagination: { $ref: "#/components/schemas/Pagination" },
+      },
+    },
+  ],
+};
+
+const projectEnvelope = envelopeOf({
+  type: "object",
+  properties: { project: projectRef },
+});
+
+const metricsEnvelope = (extra: OpenApiObject): OpenApiObject =>
+  envelopeOf({
+    type: "object",
+    properties: {
+      ...extra,
+      metrics: { $ref: "#/components/schemas/ProjectMetrics" },
+    },
+  });
+
+const projectPaths: OpenApiObject = {
+  "/projects": {
+    get: {
+      tags: [PROJECTS_TAG],
+      summary: "Discover projects",
+      description:
+        "Public projects, plus the caller's own private and unlisted projects. " +
+        "Unlisted projects are readable by slug but never enumerated here.",
+      parameters: [
+        ...offsetParams,
+        sortParam,
+        { name: "status", in: "query", required: false, schema: { type: "string" } },
+        {
+          name: "fundingStage",
+          in: "query",
+          required: false,
+          schema: { type: "string" },
+        },
+        { name: "tag", in: "query", required: false, schema: { type: "string" } },
+        { name: "tech", in: "query", required: false, schema: { type: "string" } },
+      ],
+      responses: {
+        "200": jsonResponse("A page of projects", projectListResponse),
+        ...errorResponses("422"),
+      },
+    },
+    post: {
+      tags: [PROJECTS_TAG],
+      summary: "Create a project",
+      description:
+        "The slug is derived from the title server-side and cannot be supplied. " +
+        "The caller becomes the owner and is created as an `owner` member in the " +
+        "same transaction.",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({ $ref: "#/components/schemas/CreateProjectRequest" }),
+      responses: {
+        "201": jsonResponse("Project created", projectEnvelope),
+        ...errorResponses("401", "422"),
+      },
+    },
+  },
+
+  "/projects/trending": {
+    get: {
+      tags: [PROJECTS_TAG],
+      summary: "Trending projects",
+      description:
+        "Public projects ordered by likes. Serves the dashboard widget's own " +
+        "flat contract, not the full project shape.",
+      parameters: [
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 50, default: 5 },
+        },
+      ],
+      responses: {
+        "200": jsonResponse(
+          "Trending projects",
+          envelopeOf({
+            type: "object",
+            properties: {
+              projects: {
+                type: "array",
+                items: { $ref: "#/components/schemas/TrendingProject" },
+              },
+            },
+          }),
+        ),
+        ...errorResponses("422"),
+      },
+    },
+  },
+
+  "/projects/{slug}": {
+    get: {
+      tags: [PROJECTS_TAG],
+      summary: "A single project",
+      description:
+        "404 — never 403 — when the project is private, soft-deleted, or owned " +
+        "by someone who has blocked the caller.",
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse(
+          "The project, plus the caller's relationship to it",
+          envelopeOf({
+            type: "object",
+            properties: {
+              project: projectRef,
+              viewer: {
+                oneOf: [
+                  { $ref: "#/components/schemas/ProjectViewerState" },
+                  { type: "null" },
+                ],
+              },
+            },
+          }),
+        ),
+        ...errorResponses("404", "422"),
+      },
+    },
+    patch: {
+      tags: [PROJECTS_TAG],
+      summary: "Update a project",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/UpdateProjectRequest" }),
+      responses: {
+        "200": jsonResponse("Project updated", projectEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [PROJECTS_TAG],
+      summary: "Soft-delete a project",
+      description:
+        "Sets `deletedAt` and decrements the owner's `projectsCount`. There is " +
+        "no restore endpoint in this phase.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse(
+          "Project deleted",
+          envelopeOf({ type: "object", properties: { deleted: { type: "boolean" } } }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/transfer": {
+    post: {
+      tags: [PROJECTS_TAG],
+      summary: "Transfer ownership",
+      description:
+        "Owner of record only — not a project `admin`, and not a platform admin. " +
+        "Moves `Project.ownerId`, both memberships, and both users' " +
+        "`projectsCount` in one transaction.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({
+        type: "object",
+        required: ["username"],
+        properties: { username: stringField() },
+      }),
+      responses: {
+        "200": jsonResponse("Ownership transferred", projectEnvelope),
+        ...errorResponses("401", "403", "404", "409", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/members": {
+    get: {
+      tags: [PROJECT_TEAM_TAG],
+      summary: "Project members",
+      parameters: [slugParam, ...offsetParams],
+      responses: {
+        "200": jsonResponse("A page of members", {
+          allOf: [
+            { $ref: "#/components/schemas/SuccessEnvelope" },
+            {
+              type: "object",
+              required: ["pagination"],
+              properties: {
+                data: {
+                  type: "array",
+                  items: { $ref: "#/components/schemas/ProjectMemberWithUser" },
+                },
+                pagination: { $ref: "#/components/schemas/Pagination" },
+              },
+            },
+          ],
+        }),
+        ...errorResponses("404", "422"),
+      },
+    },
+    post: {
+      tags: [PROJECT_TEAM_TAG],
+      summary: "Add a member",
+      description:
+        "`role` accepts only `collaborator` and `contributor`. Assigning `owner` " +
+        "is refused — use the transfer endpoint, which keeps both ownership " +
+        "records in step.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({
+        type: "object",
+        required: ["username"],
+        properties: {
+          username: stringField(),
+          role: {
+            type: "string",
+            enum: ["owner", "collaborator", "contributor"],
+            default: "contributor",
+          },
+        },
+      }),
+      responses: {
+        "201": jsonResponse(
+          "Member added",
+          envelopeOf({
+            type: "object",
+            properties: {
+              member: { $ref: "#/components/schemas/ProjectMemberWithUser" },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "409", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/members/{username}": {
+    patch: {
+      tags: [PROJECT_TEAM_TAG],
+      summary: "Change a member's role",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, usernameParam],
+      requestBody: requestBody({
+        type: "object",
+        required: ["role"],
+        properties: {
+          role: { type: "string", enum: ["owner", "collaborator", "contributor"] },
+        },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "Role updated",
+          envelopeOf({
+            type: "object",
+            properties: {
+              member: { $ref: "#/components/schemas/ProjectMemberWithUser" },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [PROJECT_TEAM_TAG],
+      summary: "Remove a member, or leave the project",
+      description:
+        "A member may always remove themselves; removing anyone else requires " +
+        "team-management permission. The owner can do neither.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, usernameParam],
+      responses: {
+        "200": jsonResponse(
+          "Member removed",
+          envelopeOf({ type: "object", properties: { removed: { type: "boolean" } } }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/milestones": {
+    get: {
+      tags: [PROJECT_ROADMAP_TAG],
+      summary: "The project roadmap",
+      description:
+        "Unpaginated and ordered by `position` — the response sequence is the " +
+        "render order.",
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse(
+          "Milestones in roadmap order",
+          envelopeOf({
+            type: "object",
+            properties: {
+              milestones: {
+                type: "array",
+                items: { $ref: "#/components/schemas/Milestone" },
+              },
+            },
+          }),
+        ),
+        ...errorResponses("404", "422"),
+      },
+    },
+    post: {
+      tags: [PROJECT_ROADMAP_TAG],
+      summary: "Add a milestone",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({
+        type: "object",
+        required: ["title"],
+        properties: {
+          title: stringField({ minLength: 2, maxLength: 120 }),
+          description: stringField({ maxLength: 1000 }),
+          isComplete: { type: "boolean" },
+          targetDate: { type: ["string", "null"], format: "date-time" },
+          position: { type: "integer", minimum: 0, maximum: 500 },
+        },
+      }),
+      responses: {
+        "201": jsonResponse(
+          "Milestone created, with the recomputed project progress",
+          envelopeOf({
+            type: "object",
+            properties: {
+              milestone: { $ref: "#/components/schemas/Milestone" },
+              progressPercent: { type: "integer", minimum: 0, maximum: 100 },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/milestones/{id}": {
+    patch: {
+      tags: [PROJECT_ROADMAP_TAG],
+      summary: "Edit a milestone",
+      description:
+        "`completedAt` is maintained by the server when `isComplete` flips and " +
+        "is not accepted from a client.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, childIdParam],
+      requestBody: requestBody({
+        type: "object",
+        properties: {
+          title: stringField({ minLength: 2, maxLength: 120 }),
+          description: stringField({ maxLength: 1000 }),
+          isComplete: { type: "boolean" },
+          targetDate: { type: ["string", "null"], format: "date-time" },
+          position: { type: "integer", minimum: 0, maximum: 500 },
+        },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "Milestone updated, with the recomputed project progress",
+          envelopeOf({
+            type: "object",
+            properties: {
+              milestone: { $ref: "#/components/schemas/Milestone" },
+              progressPercent: { type: "integer", minimum: 0, maximum: 100 },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [PROJECT_ROADMAP_TAG],
+      summary: "Remove a milestone",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, childIdParam],
+      responses: {
+        "200": jsonResponse(
+          "Milestone deleted, with the recomputed project progress",
+          envelopeOf({
+            type: "object",
+            properties: {
+              deleted: { type: "boolean" },
+              progressPercent: { type: "integer", minimum: 0, maximum: 100 },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/updates": {
+    get: {
+      tags: [PROJECTS_TAG],
+      summary: "The project changelog",
+      description:
+        "Cursor-paginated, newest first. Distinct from the social feed: these " +
+        "are the project's own record.",
+      parameters: [slugParam, ...cursorParams],
+      responses: {
+        "200": jsonResponse(
+          "A cursor page of updates",
+          envelopeOf({
+            type: "object",
+            required: ["updates", "nextCursor"],
+            properties: {
+              updates: {
+                type: "array",
+                items: { $ref: "#/components/schemas/ProjectUpdate" },
+              },
+              nextCursor: { type: ["string", "null"] },
+            },
+          }),
+        ),
+        ...errorResponses("404", "422"),
+      },
+    },
+    post: {
+      tags: [PROJECTS_TAG],
+      summary: "Post an update",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({
+        type: "object",
+        required: ["content"],
+        properties: { content: stringField({ minLength: 1, maxLength: 5000 }) },
+      }),
+      responses: {
+        "201": jsonResponse(
+          "Update posted",
+          envelopeOf({
+            type: "object",
+            properties: { update: { $ref: "#/components/schemas/ProjectUpdate" } },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/updates/{id}": {
+    patch: {
+      tags: [PROJECTS_TAG],
+      summary: "Edit an update",
+      description: "The author may always edit their own; others need moderation rights.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, childIdParam],
+      requestBody: requestBody({
+        type: "object",
+        required: ["content"],
+        properties: { content: stringField({ minLength: 1, maxLength: 5000 }) },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "Update edited",
+          envelopeOf({
+            type: "object",
+            properties: { update: { $ref: "#/components/schemas/ProjectUpdate" } },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [PROJECTS_TAG],
+      summary: "Soft-delete an update",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, childIdParam],
+      responses: {
+        "200": jsonResponse(
+          "Update deleted",
+          envelopeOf({ type: "object", properties: { deleted: { type: "boolean" } } }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/like": {
+    post: {
+      tags: [PROJECT_ENGAGEMENT_TAG],
+      summary: "Like a project",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      responses: {
+        "201": jsonResponse("Liked", metricsEnvelope({ liked: { type: "boolean" } })),
+        ...errorResponses("401", "404", "409", "422"),
+      },
+    },
+    delete: {
+      tags: [PROJECT_ENGAGEMENT_TAG],
+      summary: "Remove a like",
+      description: "Idempotent — unliking something never liked is a success.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse("Unliked", metricsEnvelope({ liked: { type: "boolean" } })),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/follow": {
+    post: {
+      tags: [PROJECT_ENGAGEMENT_TAG],
+      summary: "Follow a project",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      responses: {
+        "201": jsonResponse(
+          "Following",
+          metricsEnvelope({ following: { type: "boolean" } }),
+        ),
+        ...errorResponses("401", "404", "409", "422"),
+      },
+    },
+    delete: {
+      tags: [PROJECT_ENGAGEMENT_TAG],
+      summary: "Unfollow a project",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse(
+          "Unfollowed",
+          metricsEnvelope({ following: { type: "boolean" } }),
+        ),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/projects/{slug}/view": {
+    post: {
+      tags: [PROJECT_ENGAGEMENT_TAG],
+      summary: "Record a view",
+      description:
+        "Deduplicated in Redis: at most one counted view per viewer — or per " +
+        "source address when anonymous — per project per 24 hours. Owner views " +
+        "are never counted. There is deliberately no unrestricted increment.",
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse(
+          "View processed; `counted` reports whether it moved the counter",
+          metricsEnvelope({ counted: { type: "boolean" } }),
+        ),
+        ...errorResponses("404", "422"),
+      },
+    },
+  },
+
+  "/users/{username}/projects": {
+    get: {
+      tags: [PROJECTS_TAG],
+      summary: "A profile's projects",
+      description:
+        "Also serves the shipped 'pinned projects' grid, which is the three " +
+        "most-liked (`?sort=trending&limit=3`) — no persisted pin state exists.",
+      parameters: [usernameParam, ...offsetParams, sortParam],
+      responses: {
+        "200": jsonResponse("A page of the owner's projects", projectListResponse),
+        ...errorResponses("404", "422"),
+      },
+    },
+  },
+};
+
 export const openApiDocument: OpenApiDocument = {
   openapi: "3.1.0",
   info: {
@@ -907,6 +1529,10 @@ export const openApiDocument: OpenApiDocument = {
     { name: TWO_FACTOR_TAG, description: "TOTP enrollment and login challenges" },
     { name: USERS_TAG, description: "Profiles, settings, and preferences" },
     { name: SOCIAL_TAG, description: "Follows, followers, and blocking" },
+    { name: PROJECTS_TAG, description: "Projects, discovery, and the changelog" },
+    { name: PROJECT_TEAM_TAG, description: "Members, roles, and ownership" },
+    { name: PROJECT_ROADMAP_TAG, description: "Milestones and derived progress" },
+    { name: PROJECT_ENGAGEMENT_TAG, description: "Likes, followers, and views" },
   ],
   components: {
     securitySchemes: {
@@ -941,6 +1567,293 @@ export const openApiDocument: OpenApiDocument = {
           total: { type: "integer", minimum: 0 },
           totalPages: { type: "integer", minimum: 0 },
         },
+      },
+
+      /**
+       * The shared compact user projection (`users/user.view.toUserSummary`),
+       * mirroring the frontend's `PostAuthor`. Defined in Phase 5 because this
+       * is the first phase to serve it — Phase 4's endpoints returned only the
+       * narrower `UserPreview`. Posts, comments, and messages reuse it.
+       */
+      UserSummary: {
+        type: "object",
+        required: ["id", "username", "displayName", "avatarUrl", "builderRank"],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          username: stringField(),
+          displayName: stringField(),
+          avatarUrl: { type: ["string", "null"] },
+          builderRank: stringField(),
+        },
+      },
+
+      /* ── Phase 5: projects ──────────────────────────────────────────────
+         `Project.required` is exactly the 20 keys the shipped frontend's
+         `Project` type declares (`src/types/project.ts`). A contract test
+         asserts that equality, so this list cannot drift from the UI that
+         consumes it. `visibility` and `owner` are additive and therefore
+         documented but not required. */
+
+      ProjectMetrics: {
+        type: "object",
+        required: ["views", "likes", "followers"],
+        description:
+          "Nested and un-suffixed because `project-metrics-bar.tsx` reads " +
+          "`project.metrics.views`. The trending widget uses a flat " +
+          "`likesCount` on its own type instead.",
+        properties: {
+          views: { type: "integer", minimum: 0 },
+          likes: { type: "integer", minimum: 0 },
+          followers: { type: "integer", minimum: 0 },
+        },
+      },
+
+      ProjectMember: {
+        type: "object",
+        required: ["userId", "role", "joinedAt"],
+        description:
+          "The embedded member entry — userId only, no nested user. Joined " +
+          "client-side by `project-service.getProjectMembers`.",
+        properties: {
+          userId: stringField({ format: "uuid" }),
+          role: {
+            type: "string",
+            description:
+              "The persisted role. Reads may return any of the six enum " +
+              "values, including the three the shipped UI cannot label; " +
+              "writes accept only owner/collaborator/contributor.",
+            enum: [
+              "owner",
+              "admin",
+              "developer",
+              "designer",
+              "collaborator",
+              "contributor",
+            ],
+          },
+          joinedAt: stringField({ format: "date-time" }),
+        },
+      },
+
+      ProjectMemberWithUser: {
+        allOf: [
+          { $ref: "#/components/schemas/ProjectMember" },
+          {
+            type: "object",
+            properties: { user: { $ref: "#/components/schemas/UserSummary" } },
+          },
+        ],
+      },
+
+      Milestone: {
+        type: "object",
+        required: ["id", "title", "description", "isComplete", "targetDate"],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          title: stringField(),
+          description: stringField(),
+          isComplete: { type: "boolean" },
+          targetDate: { type: ["string", "null"], format: "date-time" },
+          completedAt: { type: ["string", "null"], format: "date-time" },
+          position: { type: "integer", minimum: 0 },
+        },
+      },
+
+      ProjectUpdate: {
+        type: "object",
+        required: ["id", "projectId", "authorId", "content", "createdAt"],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          projectId: stringField({ format: "uuid" }),
+          authorId: stringField({ format: "uuid" }),
+          content: stringField(),
+          createdAt: stringField({ format: "date-time" }),
+          updatedAt: stringField({ format: "date-time" }),
+          author: { $ref: "#/components/schemas/UserSummary" },
+        },
+      },
+
+      ProjectViewerState: {
+        type: "object",
+        description:
+          "The caller's relationship to the project. There is deliberately no " +
+          "field explaining *why* access was granted.",
+        required: [
+          "isOwner",
+          "isMember",
+          "role",
+          "hasLiked",
+          "isFollowing",
+          "canEdit",
+          "canManageMembers",
+        ],
+        properties: {
+          isOwner: { type: "boolean" },
+          isMember: { type: "boolean" },
+          role: { type: ["string", "null"] },
+          hasLiked: { type: "boolean" },
+          isFollowing: { type: "boolean" },
+          canEdit: { type: "boolean" },
+          canManageMembers: { type: "boolean" },
+        },
+      },
+
+      TrendingProject: {
+        type: "object",
+        description: "Mirrors the frontend's `TrendingProjectSummary`.",
+        required: [
+          "id",
+          "slug",
+          "title",
+          "description",
+          "coverImageUrl",
+          "techStack",
+          "ownerName",
+          "ownerAvatarUrl",
+          "likesCount",
+          "progressPercent",
+        ],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          slug: stringField(),
+          title: stringField(),
+          description: stringField(),
+          coverImageUrl: { type: ["string", "null"] },
+          techStack: { type: "array", items: { type: "string" } },
+          ownerName: stringField(),
+          ownerAvatarUrl: { type: ["string", "null"] },
+          likesCount: { type: "integer", minimum: 0 },
+          progressPercent: { type: "integer", minimum: 0, maximum: 100 },
+        },
+      },
+
+      Project: {
+        type: "object",
+        description: "Mirrors the shipped frontend's `Project` type.",
+        required: [
+          "coverImageUrl",
+          "createdAt",
+          "demoUrl",
+          "description",
+          "documentationUrl",
+          "fundingStage",
+          "gallery",
+          "id",
+          "members",
+          "metrics",
+          "milestones",
+          "ownerId",
+          "progressPercent",
+          "repositoryUrl",
+          "slug",
+          "status",
+          "tags",
+          "techStack",
+          "title",
+          "updatedAt",
+        ],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          slug: stringField({ pattern: "^[a-z0-9-]+$" }),
+          ownerId: stringField({ format: "uuid" }),
+          title: stringField(),
+          description: stringField(),
+          coverImageUrl: { type: ["string", "null"] },
+          gallery: { type: "array", items: { type: "string" } },
+          techStack: { type: "array", items: { type: "string" } },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Display names, flattened from the `Tag` relation.",
+          },
+          status: {
+            type: "string",
+            enum: ["idea", "in_progress", "beta", "launched", "archived"],
+          },
+          fundingStage: {
+            type: "string",
+            enum: ["bootstrapped", "pre_seed", "seed", "series_a_plus", "not_seeking"],
+          },
+          progressPercent: {
+            type: "integer",
+            minimum: 0,
+            maximum: 100,
+            description:
+              "Derived from milestone completion and never client-writable. " +
+              "Zero milestones is 0%.",
+          },
+          members: {
+            type: "array",
+            items: { $ref: "#/components/schemas/ProjectMember" },
+          },
+          milestones: {
+            type: "array",
+            items: { $ref: "#/components/schemas/Milestone" },
+          },
+          demoUrl: { type: ["string", "null"] },
+          repositoryUrl: { type: ["string", "null"] },
+          documentationUrl: { type: ["string", "null"] },
+          metrics: { $ref: "#/components/schemas/ProjectMetrics" },
+          createdAt: stringField({ format: "date-time" }),
+          updatedAt: stringField({ format: "date-time" }),
+          visibility: { type: "string", enum: ["public", "private", "unlisted"] },
+          owner: { $ref: "#/components/schemas/UserSummary" },
+        },
+      },
+
+      CreateProjectRequest: {
+        type: "object",
+        required: ["title"],
+        description:
+          "`slug`, `ownerId`, and every counter are absent by design — unknown " +
+          "keys are stripped, so posting them has no effect.",
+        properties: {
+          title: stringField({ minLength: 2, maxLength: 120 }),
+          description: stringField({ maxLength: 2000 }),
+          techStack: { type: "array", items: { type: "string" }, maxItems: 30 },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            maxItems: 10,
+            description:
+              "Must name existing tags — this phase attaches to the taxonomy " +
+              "and cannot create new tags.",
+          },
+          status: {
+            type: "string",
+            enum: ["idea", "in_progress", "beta", "launched", "archived"],
+          },
+          fundingStage: {
+            type: "string",
+            enum: ["bootstrapped", "pre_seed", "seed", "series_a_plus", "not_seeking"],
+          },
+          visibility: { type: "string", enum: ["public", "private", "unlisted"] },
+          coverImageUrl: { type: ["string", "null"], maxLength: 500 },
+          gallery: {
+            type: "array",
+            items: { type: "string", maxLength: 500 },
+            maxItems: 20,
+            description:
+              "Opaque media references. Not URL-validated in this phase — the " +
+              "shipped fixtures use ids like `gal_1`, and uploads land later.",
+          },
+          demoUrl: { type: ["string", "null"], maxLength: 500 },
+          repositoryUrl: { type: ["string", "null"], maxLength: 500 },
+          documentationUrl: { type: ["string", "null"], maxLength: 500 },
+        },
+      },
+
+      UpdateProjectRequest: {
+        allOf: [
+          { $ref: "#/components/schemas/CreateProjectRequest" },
+          {
+            type: "object",
+            required: [],
+            description:
+              "Every field optional, but an empty patch is rejected rather " +
+              "than performed as a no-op write. `slug` cannot be changed.",
+          },
+        ],
       },
       ErrorEnvelope: {
         type: "object",
@@ -1304,6 +2217,7 @@ export const openApiDocument: OpenApiDocument = {
     },
     ...authPaths,
     ...userPaths,
+    ...projectPaths,
   },
 };
 

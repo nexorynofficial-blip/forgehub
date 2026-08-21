@@ -49,6 +49,21 @@ export const AuditAction = {
   PRIVACY_SETTINGS_UPDATED: "PRIVACY_SETTINGS_UPDATED",
   USER_BLOCKED: "USER_BLOCKED",
   USER_UNBLOCKED: "USER_UNBLOCKED",
+
+  /* Phase 5 — projects. BACKEND_ARCHITECTURE.md §26 names `PROJECT_DELETED`
+     and BACKEND_TRD.md §29 names "Project ownership change" as auditable, so
+     these are required rather than discretionary. Likes, follows, views, and
+     milestone edits are deliberately *not* audited: like follows, they are
+     high-volume ordinary activity, not security events. Visibility changes are
+     audited because turning a private project public discloses its contents,
+     and that is a decision someone may later need evidence of. */
+  PROJECT_CREATED: "PROJECT_CREATED",
+  PROJECT_DELETED: "PROJECT_DELETED",
+  PROJECT_VISIBILITY_CHANGED: "PROJECT_VISIBILITY_CHANGED",
+  PROJECT_OWNERSHIP_TRANSFERRED: "PROJECT_OWNERSHIP_TRANSFERRED",
+  PROJECT_MEMBER_ADDED: "PROJECT_MEMBER_ADDED",
+  PROJECT_MEMBER_REMOVED: "PROJECT_MEMBER_REMOVED",
+  PROJECT_MEMBER_ROLE_CHANGED: "PROJECT_MEMBER_ROLE_CHANGED",
 } as const;
 
 export type AuditActionValue = (typeof AuditAction)[keyof typeof AuditAction];

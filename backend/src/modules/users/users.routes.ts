@@ -4,6 +4,8 @@ import { optionalAuth, requireAuth } from "../../middleware/auth.middleware.js";
 import { validate } from "../../middleware/validation.middleware.js";
 import * as followsController from "../follows/follows.controller.js";
 import { followListQuerySchema } from "../follows/follows.schema.js";
+import * as projectsController from "../projects/projects.controller.js";
+import { ownerProjectsQuerySchema } from "../projects/projects.schema.js";
 import * as controller from "./users.controller.js";
 import {
   updateNotificationPreferenceSchema,
@@ -94,6 +96,22 @@ export function createUserRouter(): Router {
     optionalAuth,
     validate({ params: usernameParamSchema }),
     controller.getAchievements,
+  );
+
+  /**
+   * A profile's projects (Phase 5), including the shipped "pinned projects"
+   * grid — which the frontend renders as the three most-liked
+   * (`?sort=trending&limit=3`), since no persisted pin state exists.
+   *
+   * Mounted here rather than under `/projects` for the same reason the follow
+   * routes are: it is addressed as a property of a profile. The handler lives
+   * in the projects module, as `followsController` lives in `follows`.
+   */
+  router.get(
+    "/:username/projects",
+    optionalAuth,
+    validate({ params: usernameParamSchema, query: ownerProjectsQuerySchema }),
+    projectsController.listByOwner,
   );
 
   router.get(

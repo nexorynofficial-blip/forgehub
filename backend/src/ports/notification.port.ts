@@ -20,8 +20,17 @@ import { logger } from "../utils/logger.js";
  * consumers changes when it does.
  */
 
-/** Notification kinds Phase 4 can raise. A subset of `NotificationType`. */
-export type PortNotificationType = "follower";
+/**
+ * Notification kinds the implemented phases can raise. A subset of
+ * `NotificationType`.
+ *
+ * `project_update` is deliberately **absent**. It is a fan-out — every
+ * follower of a project receives one — and this port is single-recipient by
+ * design. Looping over followers inside the projects service would put
+ * delivery fan-out in the domain layer, which is the coupling the port exists
+ * to prevent. Phase 9 owns fan-out and adds it there.
+ */
+export type PortNotificationType = "follower" | "like" | "project_invite";
 
 export interface NotificationEvent {
   /** Who receives it. */
@@ -29,6 +38,13 @@ export interface NotificationEvent {
   /** Who caused it. Never a client-supplied id — always the verified actor. */
   actorId: string;
   type: PortNotificationType;
+  /**
+   * What the notification is about, for the types that need it. Mirrors the
+   * schema's polymorphic `(entityType, entityId)` target so Phase 9 can persist
+   * the row without re-deriving the subject.
+   */
+  entityType?: "project" | "user";
+  entityId?: string;
 }
 
 export interface NotificationPort {
