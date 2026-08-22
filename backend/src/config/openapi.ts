@@ -1512,6 +1512,432 @@ const projectPaths: OpenApiObject = {
   },
 };
 
+/* ── Post, comment, and feed paths ──────────────────────────────────────── */
+
+const POSTS_TAG = "Posts";
+const COMMENTS_TAG = "Comments";
+const FEED_TAG = "Feed";
+
+const postIdParam = {
+  name: "id",
+  in: "path",
+  required: true,
+  schema: { type: "string", format: "uuid" },
+} as const;
+
+const postRef = { $ref: "#/components/schemas/Post" };
+
+const postEnvelope = envelopeOf({
+  type: "object",
+  properties: {
+    post: postRef,
+    viewer: {
+      oneOf: [{ $ref: "#/components/schemas/PostViewerState" }, { type: "null" }],
+    },
+  },
+});
+
+/** The frontend's `Paginated<T>` — items/nextCursor/total, not the offset block. */
+const feedEnvelope = envelopeOf({
+  type: "object",
+  required: ["items", "nextCursor", "total"],
+  properties: {
+    items: { type: "array", items: postRef },
+    nextCursor: { type: ["string", "null"] },
+    total: { type: "integer", minimum: 0 },
+  },
+});
+
+const commentPageEnvelope = envelopeOf({
+  type: "object",
+  required: ["comments", "nextCursor"],
+  properties: {
+    comments: { type: "array", items: { $ref: "#/components/schemas/Comment" } },
+    nextCursor: { type: ["string", "null"] },
+  },
+});
+
+const likeEnvelope = envelopeOf({
+  type: "object",
+  properties: {
+    liked: { type: "boolean" },
+    likesCount: { type: "integer", minimum: 0 },
+  },
+});
+
+const postPaths: OpenApiObject = {
+  "/posts": {
+    post: {
+      tags: [POSTS_TAG],
+      summary: "Create a post",
+      description:
+        "The author is the authenticated caller. `communityId` is not accepted " +
+        "in this phase, because community visibility depends on a Community " +
+        "that a later phase owns.",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({ $ref: "#/components/schemas/CreatePostRequest" }),
+      responses: {
+        "201": jsonResponse("Post created", postEnvelope),
+        ...errorResponses("401", "422"),
+      },
+    },
+  },
+
+  "/posts/{id}": {
+    get: {
+      tags: [POSTS_TAG],
+      summary: "A single post",
+      description:
+        "404 — never 403 — when the post is private, soft-deleted, published " +
+        "into a community, or authored by someone who has blocked the caller.",
+      parameters: [postIdParam],
+      responses: {
+        "200": jsonResponse(
+          "The post, plus the caller's relationship to it",
+          postEnvelope,
+        ),
+        ...errorResponses("404", "422"),
+      },
+    },
+    patch: {
+      tags: [POSTS_TAG],
+      summary: "Edit a post",
+      description:
+        "Author only. An admin may remove a post but never rewrite it — " +
+        "moderation removes content rather than restating it in another " +
+        "person's voice. `type` and `poll` cannot change once votes may exist.",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/UpdatePostRequest" }),
+      responses: {
+        "200": jsonResponse("Post updated", postEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [POSTS_TAG],
+      summary: "Soft-delete a post",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      responses: {
+        "200": jsonResponse(
+          "Post deleted",
+          envelopeOf({ type: "object", properties: { deleted: { type: "boolean" } } }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/posts/{id}/comments": {
+    get: {
+      tags: [COMMENTS_TAG],
+      summary: "Top-level comments on a post",
+      description:
+        "Cursor-paginated, oldest first. A soft-deleted comment that still has " +
+        "replies is returned as a tombstone so its replies stay reachable.",
+      parameters: [postIdParam, ...cursorParams],
+      responses: {
+        "200": jsonResponse("A cursor page of comments", commentPageEnvelope),
+        ...errorResponses("404", "422"),
+      },
+    },
+    post: {
+      tags: [COMMENTS_TAG],
+      summary: "Comment on a post, or reply to a comment",
+      description:
+        "Replies are one level deep. Replying to a reply is a 422 naming the " +
+        "top-level comment to use instead.",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/CreateCommentRequest" }),
+      responses: {
+        "201": jsonResponse(
+          "Comment posted",
+          envelopeOf({
+            type: "object",
+            properties: { comment: { $ref: "#/components/schemas/Comment" } },
+          }),
+        ),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/posts/{id}/like": {
+    post: {
+      tags: [POSTS_TAG],
+      summary: "Like a post",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      responses: {
+        "201": jsonResponse("Liked", likeEnvelope),
+        ...errorResponses("401", "404", "409", "422"),
+      },
+    },
+    delete: {
+      tags: [POSTS_TAG],
+      summary: "Remove a like",
+      description: "Idempotent — unliking something never liked is a success.",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      responses: {
+        "200": jsonResponse("Unliked", likeEnvelope),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/posts/{id}/bookmark": {
+    post: {
+      tags: [POSTS_TAG],
+      summary: "Bookmark a post",
+      description:
+        "Bookmarks are private and carry no counter — there is no public " +
+        "tally, so saving something is never a signal to anyone else.",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      responses: {
+        "201": jsonResponse(
+          "Bookmarked",
+          envelopeOf({ type: "object", properties: { bookmarked: { type: "boolean" } } }),
+        ),
+        ...errorResponses("401", "404", "409", "422"),
+      },
+    },
+    delete: {
+      tags: [POSTS_TAG],
+      summary: "Remove a bookmark",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      responses: {
+        "200": jsonResponse(
+          "Bookmark removed",
+          envelopeOf({ type: "object", properties: { bookmarked: { type: "boolean" } } }),
+        ),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/posts/{id}/poll/vote": {
+    post: {
+      tags: [POSTS_TAG],
+      summary: "Vote in a post's poll",
+      description:
+        "The request names an **option**, not the poll: the frontend's `Poll` " +
+        "type carries no id. Votes are final — the unique constraint is on the " +
+        "poll, so a second vote for any option is a 409.",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      requestBody: requestBody({
+        type: "object",
+        required: ["optionId"],
+        properties: { optionId: stringField({ format: "uuid" }) },
+      }),
+      responses: {
+        "201": jsonResponse(
+          "Vote recorded, with the updated tallies",
+          envelopeOf({
+            type: "object",
+            properties: {
+              votedOptionId: stringField({ format: "uuid" }),
+              options: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: stringField({ format: "uuid" }),
+                    voteCount: { type: "integer", minimum: 0 },
+                  },
+                },
+              },
+            },
+          }),
+        ),
+        ...errorResponses("401", "404", "409", "422"),
+      },
+    },
+  },
+
+  "/comments/{id}": {
+    patch: {
+      tags: [COMMENTS_TAG],
+      summary: "Edit a comment",
+      description: "Author only — not the post author, and not an admin.",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      requestBody: requestBody({
+        type: "object",
+        required: ["content"],
+        properties: { content: stringField({ minLength: 1, maxLength: 2000 }) },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "Comment updated",
+          envelopeOf({
+            type: "object",
+            properties: { comment: { $ref: "#/components/schemas/Comment" } },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [COMMENTS_TAG],
+      summary: "Soft-delete a comment",
+      description:
+        "Permitted to the comment's author, the post's author (thread " +
+        "moderation), and platform admins. A deleted comment with replies " +
+        "survives as a tombstone.",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      responses: {
+        "200": jsonResponse(
+          "Comment deleted",
+          envelopeOf({ type: "object", properties: { deleted: { type: "boolean" } } }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/comments/{id}/replies": {
+    get: {
+      tags: [COMMENTS_TAG],
+      summary: "Replies to a comment",
+      description: "One level deep; a reply can never itself have replies.",
+      parameters: [postIdParam, ...cursorParams],
+      responses: {
+        "200": jsonResponse("A cursor page of replies", commentPageEnvelope),
+        ...errorResponses("404", "422"),
+      },
+    },
+  },
+
+  "/comments/{id}/like": {
+    post: {
+      tags: [COMMENTS_TAG],
+      summary: "Like a comment",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      responses: {
+        "201": jsonResponse("Liked", likeEnvelope),
+        ...errorResponses("401", "404", "409", "422"),
+      },
+    },
+    delete: {
+      tags: [COMMENTS_TAG],
+      summary: "Remove a comment like",
+      security: [{ bearerAuth: [] }],
+      parameters: [postIdParam],
+      responses: {
+        "200": jsonResponse("Unliked", likeEnvelope),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/feed": {
+    get: {
+      tags: [FEED_TAG],
+      summary: "The social feed",
+      description:
+        "Cursor-paginated. Every filter is a database query over an indexed " +
+        "column — there is no recommendation engine in this phase, so " +
+        "`ai_recommended` aliases `recommended` rather than failing a filter " +
+        "the shipped UI already offers.",
+      parameters: [
+        {
+          name: "filter",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: [
+              "latest",
+              "trending",
+              "following",
+              "recommended",
+              "popular_today",
+              "ai_recommended",
+            ],
+            default: "latest",
+          },
+        },
+        ...cursorParams,
+      ],
+      responses: {
+        "200": jsonResponse("A cursor page of posts", feedEnvelope),
+        ...errorResponses("422"),
+      },
+    },
+  },
+
+  "/feed/new-count": {
+    get: {
+      tags: [FEED_TAG],
+      summary: "How many posts are newer than a watermark",
+      description:
+        "Counted against the same visibility scope the feed serves, so it " +
+        "never promises rows the feed would then refuse to return.",
+      parameters: [
+        {
+          name: "since",
+          in: "query",
+          required: true,
+          schema: { type: "string", format: "date-time" },
+        },
+        {
+          name: "filter",
+          in: "query",
+          required: false,
+          schema: { type: "string", default: "latest" },
+        },
+      ],
+      responses: {
+        "200": jsonResponse(
+          "The count",
+          envelopeOf({
+            type: "object",
+            properties: {
+              count: { type: "integer", minimum: 0 },
+              since: stringField({ format: "date-time" }),
+            },
+          }),
+        ),
+        ...errorResponses("422"),
+      },
+    },
+  },
+
+  "/users/{username}/posts": {
+    get: {
+      tags: [POSTS_TAG],
+      summary: "A profile's posts",
+      parameters: [usernameParam, ...cursorParams],
+      responses: {
+        "200": jsonResponse("A cursor page of the author's posts", feedEnvelope),
+        ...errorResponses("404", "422"),
+      },
+    },
+  },
+
+  "/users/me/bookmarks": {
+    get: {
+      tags: [POSTS_TAG],
+      summary: "The caller's own bookmarks",
+      description: "Never exposed for another user.",
+      security: [{ bearerAuth: [] }],
+      parameters: [...cursorParams],
+      responses: {
+        "200": jsonResponse("A cursor page of bookmarked posts", feedEnvelope),
+        ...errorResponses("401", "422"),
+      },
+    },
+  },
+};
+
 export const openApiDocument: OpenApiDocument = {
   openapi: "3.1.0",
   info: {
@@ -1533,6 +1959,9 @@ export const openApiDocument: OpenApiDocument = {
     { name: PROJECT_TEAM_TAG, description: "Members, roles, and ownership" },
     { name: PROJECT_ROADMAP_TAG, description: "Milestones and derived progress" },
     { name: PROJECT_ENGAGEMENT_TAG, description: "Likes, followers, and views" },
+    { name: POSTS_TAG, description: "Posts, media, polls, likes, and bookmarks" },
+    { name: COMMENTS_TAG, description: "Comments, replies, and comment likes" },
+    { name: FEED_TAG, description: "The social feed and its filters" },
   ],
   components: {
     securitySchemes: {
@@ -1584,6 +2013,272 @@ export const openApiDocument: OpenApiDocument = {
           displayName: stringField(),
           avatarUrl: { type: ["string", "null"] },
           builderRank: stringField(),
+        },
+      },
+
+      /* ── Phase 6: posts, comments, feed ─────────────────────────────────
+         `Post.required` is exactly the 11 keys the shipped frontend's `Post`
+         type declares (`src/types/post.ts`). A contract test asserts that
+         equality, so this list cannot drift from the UI that consumes it.
+         `visibility`, `updatedAt`, `media`, and `author` are additive and
+         therefore documented but not required — and `communityId` appears
+         nowhere at all. */
+
+      CodeSnippet: {
+        type: "object",
+        required: ["language", "code"],
+        description:
+          "Reassembled from two columns on the post; a post carries at most one.",
+        properties: { language: stringField(), code: stringField() },
+      },
+
+      PollOption: {
+        type: "object",
+        required: ["id", "label", "voteCount"],
+        description: "Mirrors the frontend's `PollOption` — order is the array order.",
+        properties: {
+          id: stringField({ format: "uuid" }),
+          label: stringField(),
+          voteCount: { type: "integer", minimum: 0 },
+        },
+      },
+
+      Poll: {
+        type: "object",
+        required: ["question", "options", "closesAt"],
+        description:
+          "Mirrors the frontend's `Poll`, which carries no id of its own — " +
+          "voting names an option. `id`, `votedOptionId`, and `isClosed` are " +
+          "additive so a reload can restore what the viewer chose.",
+        properties: {
+          question: stringField(),
+          options: { type: "array", items: { $ref: "#/components/schemas/PollOption" } },
+          closesAt: { type: ["string", "null"], format: "date-time" },
+          id: stringField({ format: "uuid" }),
+          votedOptionId: { type: ["string", "null"], format: "uuid" },
+          isClosed: { type: "boolean" },
+        },
+      },
+
+      PostMedia: {
+        type: "object",
+        required: ["url", "type", "position"],
+        properties: {
+          url: stringField({ format: "uri" }),
+          type: { type: "string", enum: ["image", "video"] },
+          position: { type: "integer", minimum: 0 },
+          width: { type: ["integer", "null"] },
+          height: { type: ["integer", "null"] },
+        },
+      },
+
+      PostViewerState: {
+        type: "object",
+        description:
+          "The caller's relationship to the post. There is deliberately no " +
+          "field explaining why the post was visible.",
+        required: [
+          "hasLiked",
+          "isBookmarked",
+          "votedOptionId",
+          "isAuthor",
+          "canEdit",
+          "canDelete",
+        ],
+        properties: {
+          hasLiked: { type: "boolean" },
+          isBookmarked: { type: "boolean" },
+          votedOptionId: { type: ["string", "null"], format: "uuid" },
+          isAuthor: { type: "boolean" },
+          canEdit: { type: "boolean" },
+          canDelete: { type: "boolean" },
+        },
+      },
+
+      Post: {
+        type: "object",
+        description: "Mirrors the shipped frontend's `Post` and `PostWithAuthor`.",
+        required: [
+          "authorId",
+          "codeSnippet",
+          "commentsCount",
+          "content",
+          "createdAt",
+          "id",
+          "likesCount",
+          "mediaUrls",
+          "poll",
+          "projectId",
+          "type",
+        ],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          authorId: stringField({ format: "uuid" }),
+          projectId: { type: ["string", "null"], format: "uuid" },
+          type: {
+            type: "string",
+            enum: [
+              "text",
+              "image",
+              "video",
+              "code",
+              "markdown",
+              "poll",
+              "update",
+              "milestone",
+              "announcement",
+            ],
+          },
+          content: stringField(),
+          mediaUrls: {
+            type: "array",
+            items: { type: "string" },
+            description: "Flattened from the media relation, ordered by position.",
+          },
+          codeSnippet: {
+            oneOf: [{ $ref: "#/components/schemas/CodeSnippet" }, { type: "null" }],
+          },
+          poll: { oneOf: [{ $ref: "#/components/schemas/Poll" }, { type: "null" }] },
+          likesCount: { type: "integer", minimum: 0 },
+          commentsCount: {
+            type: "integer",
+            minimum: 0,
+            description: "Includes replies; excludes soft-deleted comments.",
+          },
+          createdAt: stringField({ format: "date-time" }),
+          visibility: { type: "string", enum: ["public", "private", "unlisted"] },
+          updatedAt: stringField({ format: "date-time" }),
+          media: { type: "array", items: { $ref: "#/components/schemas/PostMedia" } },
+          author: { $ref: "#/components/schemas/UserSummary" },
+        },
+      },
+
+      Comment: {
+        type: "object",
+        description:
+          "Mirrors the frontend's `Comment` and `CommentWithAuthor`. A " +
+          "soft-deleted comment that still has replies is returned as a " +
+          "tombstone: content replaced, author null, likes zeroed.",
+        required: [
+          "id",
+          "postId",
+          "authorId",
+          "parentCommentId",
+          "content",
+          "likesCount",
+          "createdAt",
+        ],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          postId: stringField({ format: "uuid" }),
+          authorId: stringField(),
+          parentCommentId: { type: ["string", "null"], format: "uuid" },
+          content: stringField(),
+          likesCount: { type: "integer", minimum: 0 },
+          createdAt: stringField({ format: "date-time" }),
+          updatedAt: stringField({ format: "date-time" }),
+          isDeleted: { type: "boolean" },
+          replyCount: { type: "integer", minimum: 0 },
+          author: {
+            oneOf: [{ $ref: "#/components/schemas/UserSummary" }, { type: "null" }],
+          },
+        },
+      },
+
+      CreatePostRequest: {
+        type: "object",
+        description:
+          "`authorId`, `communityId`, and every counter are absent by design — " +
+          "unknown keys are stripped, so posting them has no effect.",
+        properties: {
+          type: {
+            type: "string",
+            enum: [
+              "text",
+              "image",
+              "video",
+              "code",
+              "markdown",
+              "poll",
+              "update",
+              "milestone",
+              "announcement",
+            ],
+            default: "text",
+          },
+          content: stringField({ maxLength: 5000 }),
+          visibility: { type: "string", enum: ["public", "private", "unlisted"] },
+          projectId: {
+            type: ["string", "null"],
+            format: "uuid",
+            description:
+              "Optional attribution only. Naming a project never writes to it.",
+          },
+          mediaUrls: {
+            type: "array",
+            maxItems: 4,
+            items: { type: "string", format: "uri" },
+            description: "Must be http or https — these are rendered into the DOM.",
+          },
+          media: {
+            type: "array",
+            maxItems: 4,
+            items: { $ref: "#/components/schemas/PostMedia" },
+          },
+          codeSnippet: { $ref: "#/components/schemas/CodeSnippet" },
+          poll: {
+            type: "object",
+            required: ["question", "options"],
+            properties: {
+              question: stringField({ maxLength: 200 }),
+              options: {
+                type: "array",
+                minItems: 2,
+                maxItems: 8,
+                items: { type: "string", maxLength: 80 },
+              },
+              closesAt: { type: ["string", "null"], format: "date-time" },
+            },
+          },
+        },
+      },
+
+      UpdatePostRequest: {
+        type: "object",
+        description:
+          "Every field optional, but an empty patch is rejected. `type` and " +
+          "`poll` are absent: changing either after votes exist would " +
+          "invalidate or silently reassign them.",
+        properties: {
+          content: stringField({ maxLength: 5000 }),
+          visibility: { type: "string", enum: ["public", "private", "unlisted"] },
+          mediaUrls: {
+            type: "array",
+            maxItems: 4,
+            items: { type: "string", format: "uri" },
+          },
+          media: {
+            type: "array",
+            maxItems: 4,
+            items: { $ref: "#/components/schemas/PostMedia" },
+          },
+          codeSnippet: {
+            oneOf: [{ $ref: "#/components/schemas/CodeSnippet" }, { type: "null" }],
+          },
+        },
+      },
+
+      CreateCommentRequest: {
+        type: "object",
+        required: ["content"],
+        properties: {
+          content: stringField({ minLength: 1, maxLength: 2000 }),
+          parentCommentId: {
+            type: ["string", "null"],
+            format: "uuid",
+            description:
+              "Present for a reply. Replying to a reply is refused with a 422.",
+          },
         },
       },
 
@@ -2218,6 +2913,7 @@ export const openApiDocument: OpenApiDocument = {
     ...authPaths,
     ...userPaths,
     ...projectPaths,
+    ...postPaths,
   },
 };
 

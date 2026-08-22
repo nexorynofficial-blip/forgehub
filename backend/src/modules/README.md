@@ -45,8 +45,8 @@ BACKEND_ARCHITECTURE.md §38:
 | `users`         | 4     | **done** — absorbs `profiles`                      |
 | `follows`       | 4     | **done** — absorbs blocking                        |
 | `projects`      | 5     | **done** — members, roadmap, changelog, engagement |
-| `posts`         | 6     |                                                    |
-| `comments`      | 6     |                                                    |
+| `posts`         | 6     | **done** — absorbs polls, engagement, and the feed |
+| `comments`      | 6     | **done** — folded into `posts`                     |
 | `communities`   | 7     |                                                    |
 | `messages`      | 8     |                                                    |
 | `notifications` | 9     |                                                    |
@@ -68,6 +68,13 @@ Two deviations from TRD §4's module list, both deliberate:
   alongside it. Blocking lives here because it is the inverse relationship and
   shares the same integrity rules.
 
+`posts` folds `comments` in, and absorbs polls, engagement, and the feed. A
+comment has no meaning outside a post and every comment write authorizes
+against the post gate, so two modules would re-derive one access decision. The
+feed lives here too: ARCHITECTURE §38 calls Phase 6 "Feed" while TRD §4 names
+`posts`/`comments`, and the shipped UI is one component tree behind one
+service. See `docs/POSTS_AND_FEED.md`.
+
 `projects` keeps the whole aggregate — members, milestones, updates, and
 engagement — in one module, but varies the file shape above: **one repository**
 for the root and every child (milestone writes and the `progressPercent` they
@@ -85,9 +92,12 @@ follows  ──►  users       (targets are resolved by username; previews reus
                            the shared user projection)
 projects ──►  users       (owners/members/authors reuse `toUserSummary`)
 projects ──►  follows     (a blocked viewer cannot see the blocker's projects)
+posts    ──►  users       (authors reuse `toUserSummary`)
+posts    ──►  follows     (blocking, and the "following" feed filter)
 ```
 
-`projects` depends on both, and neither depends on it.
+`projects` and `posts` each depend on `users` and `follows`; neither depends on
+the other, and nothing depends on either.
 
 `users` and `follows` reference each other's **repositories and pure helpers**,
 not each other's services, which keeps the cycle out of the business layer.

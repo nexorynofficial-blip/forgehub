@@ -1,6 +1,11 @@
 import { Router } from "express";
 
 import { createAuthRouter } from "../modules/auth/auth.routes.js";
+import {
+  createCommentRouter,
+  createFeedRouter,
+  createPostRouter,
+} from "../modules/posts/posts.routes.js";
 import { createProjectRouter } from "../modules/projects/projects.routes.js";
 import { createUserRouter } from "../modules/users/users.routes.js";
 import { successResponse } from "../utils/response.js";
@@ -38,6 +43,12 @@ export function createV1Router(): Router {
   // projects module but is addressed as a property of a profile.
   router.use("/users", createUserRouter());
   router.use("/projects", createProjectRouter());
+  // Posts, comments, and the feed (Phase 6). Comments are listed and created
+  // under their post but mutated by their own id — ARCHITECTURE §29 asks for
+  // the `/comments` prefix, and TRD §5 names `/feed` separately from `/posts`.
+  router.use("/posts", createPostRouter());
+  router.use("/comments", createCommentRouter());
+  router.use("/feed", createFeedRouter());
 
   return router;
 }

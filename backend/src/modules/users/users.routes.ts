@@ -4,6 +4,8 @@ import { optionalAuth, requireAuth } from "../../middleware/auth.middleware.js";
 import { validate } from "../../middleware/validation.middleware.js";
 import * as followsController from "../follows/follows.controller.js";
 import { followListQuerySchema } from "../follows/follows.schema.js";
+import * as postsController from "../posts/posts.controller.js";
+import { cursorQuerySchema as postCursorQuerySchema } from "../posts/posts.schema.js";
 import * as projectsController from "../projects/projects.controller.js";
 import { ownerProjectsQuerySchema } from "../projects/projects.schema.js";
 import * as controller from "./users.controller.js";
@@ -71,6 +73,18 @@ export function createUserRouter(): Router {
     controller.updateNotificationPreference,
   );
 
+  /**
+   * The caller's own bookmarks (Phase 6). Never exposed for another user —
+   * a bookmark is a private save, not a public signal, which is also why no
+   * `bookmarksCount` is served anywhere.
+   */
+  router.get(
+    "/me/bookmarks",
+    requireAuth,
+    validate({ query: postCursorQuerySchema }),
+    postsController.listBookmarks,
+  );
+
   /** The caller's own block list. Never exposed for another user. */
   router.get(
     "/me/blocks",
@@ -112,6 +126,18 @@ export function createUserRouter(): Router {
     optionalAuth,
     validate({ params: usernameParamSchema, query: ownerProjectsQuerySchema }),
     projectsController.listByOwner,
+  );
+
+  /**
+   * A profile's posts (Phase 6), addressed as a property of the profile — the
+   * same reasoning that put the follow and project routes here. The handler
+   * lives in the posts module.
+   */
+  router.get(
+    "/:username/posts",
+    optionalAuth,
+    validate({ params: usernameParamSchema, query: postCursorQuerySchema }),
+    postsController.listByAuthor,
   );
 
   router.get(

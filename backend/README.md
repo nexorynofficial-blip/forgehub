@@ -3,11 +3,12 @@
 REST + realtime API for the ForgeHub platform. Serves the existing Next.js
 frontend at the repository root (`../src`), which is complete and unchanged.
 
-**Status: Backend Phase 5 (Projects) complete.** Phases 1–5 have landed:
-infrastructure, the full database schema, authentication, the users/profiles +
-follow-graph slice, and the project aggregate — members, roadmap, changelog,
-and engagement. Feed, communities, messaging, notifications, search, and admin
-are later phases and are deliberately not implemented.
+**Status: Backend Phase 6 (Posts, Comments & Feed) complete.** Phases 1–6 have
+landed: infrastructure, the full database schema, authentication, the
+users/profiles + follow-graph slice, the project aggregate, and the social
+surface — posts, media, polls, comments, engagement, and the feed. Communities,
+messaging, notifications, search, and admin are later phases and are
+deliberately not implemented.
 
 ## Stack
 
@@ -107,6 +108,7 @@ backend/
       users/            Phase 4 — profiles, settings, preferences, projection layer
       follows/          Phase 4 — follow graph and blocking
       projects/         Phase 5 — projects, members, milestones, updates, engagement
+      posts/            Phase 6 — posts, comments, polls, engagement, feed
     ports/
       notification.port.ts        Seam for Phase 9; no-op for now
     repositories/
@@ -145,6 +147,7 @@ backend/
     AUTHENTICATION.md           Auth architecture
     USERS_AND_SOCIAL_GRAPH.md   Privacy, projection, blocking, counters
     PROJECTS.md                 Visibility, permissions, derived progress, counters
+    POSTS_AND_FEED.md           Post visibility, tombstones, feed filters, counters
 ```
 
 Business logic lives in module services, database access in module
@@ -190,6 +193,9 @@ message for any 5xx is replaced with a generic string.
 | —      | `/api/v1/auth/*`       | 17 authentication endpoints — see docs/AUTHENTICATION.md.                            |
 | —      | `/api/v1/users/*`      | 12 profile / settings / social-graph endpoints — see docs/USERS_AND_SOCIAL_GRAPH.md. |
 | —      | `/api/v1/projects/*`   | 24 operations over 13 paths, plus `/users/:username/projects`. See docs/PROJECTS.md. |
+| —      | `/api/v1/posts/*`      | Posts, comments, likes, bookmarks, polls. See docs/POSTS_AND_FEED.md.                |
+| —      | `/api/v1/comments/*`   | Comment edit, delete, replies, likes.                                                |
+| —      | `/api/v1/feed`         | The social feed and its six filters, plus `/feed/new-count`.                         |
 
 Probes sit at the root, not under `/api/v1`, so orchestrator config does not
 change when the API version does. They are also registered _before_ the rate
@@ -247,7 +253,7 @@ module that would need a postinstall step.
 npm test
 ```
 
-524 tests across 22 files:
+675 tests across 28 files:
 
 | Suite                          | Covers                                                                             |
 | ------------------------------ | ---------------------------------------------------------------------------------- |
@@ -273,6 +279,12 @@ npm test
 | `project-updates.test.ts`      | Changelog with cursor paging, plus likes, followers, and deduplicated views        |
 | `projects-security.test.ts`    | Private/unlisted 404s, blocking, admin override, projection leaks, OpenAPI sync    |
 | `projects-concurrency.test.ts` | Counters, slug races, and lost updates under real parallel requests                |
+| `posts-unit.test.ts`           | Post visibility, mention parsing, write schemas and what they strip                |
+| `posts.test.ts`                | Create → read → edit → soft-delete, media, polls, likes, bookmarks                 |
+| `post-comments.test.ts`        | Threads, one-level replies, tombstones, moderation, comment likes, voting          |
+| `feed.test.ts`                 | All six filters, cursor paging, feed visibility, the new-count watermark           |
+| `posts-security.test.ts`       | Private/community 404s, blocking, admin limits, projection leaks, OpenAPI sync     |
+| `posts-concurrency.test.ts`    | Like/comment/bookmark/vote counters under real parallel requests                   |
 
 HTTP-only suites mock Postgres and Redis so they stay hermetic. The auth,
 database, and socket suites talk to real infrastructure — `docker compose up -d

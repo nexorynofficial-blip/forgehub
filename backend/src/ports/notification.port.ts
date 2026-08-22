@@ -30,7 +30,8 @@ import { logger } from "../utils/logger.js";
  * delivery fan-out in the domain layer, which is the coupling the port exists
  * to prevent. Phase 9 owns fan-out and adds it there.
  */
-export type PortNotificationType = "follower" | "like" | "project_invite";
+export type PortNotificationType =
+  "follower" | "like" | "project_invite" | "comment" | "reply" | "mention";
 
 export interface NotificationEvent {
   /** Who receives it. */
@@ -43,7 +44,7 @@ export interface NotificationEvent {
    * schema's polymorphic `(entityType, entityId)` target so Phase 9 can persist
    * the row without re-deriving the subject.
    */
-  entityType?: "project" | "user";
+  entityType?: "project" | "user" | "post" | "comment";
   entityId?: string;
 }
 

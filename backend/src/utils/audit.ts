@@ -64,6 +64,16 @@ export const AuditAction = {
   PROJECT_MEMBER_ADDED: "PROJECT_MEMBER_ADDED",
   PROJECT_MEMBER_REMOVED: "PROJECT_MEMBER_REMOVED",
   PROJECT_MEMBER_ROLE_CHANGED: "PROJECT_MEMBER_ROLE_CHANGED",
+
+  /* Phase 6 — posts and comments. Deletion is audited because it destroys
+     content someone else may have replied to, and because a moderator
+     removing another user is exactly the kind of action people later need
+     evidence of. Likes, bookmarks, votes, and edits are deliberately *not*
+     audited: like follows, they are high-volume ordinary activity. Creation
+     is audited only so a deletion has a counterpart to reconcile against. */
+  POST_CREATED: "POST_CREATED",
+  POST_DELETED: "POST_DELETED",
+  COMMENT_DELETED: "COMMENT_DELETED",
 } as const;
 
 export type AuditActionValue = (typeof AuditAction)[keyof typeof AuditAction];
