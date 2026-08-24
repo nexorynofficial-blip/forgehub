@@ -1,6 +1,7 @@
 import { Router } from "express";
 
 import { createAuthRouter } from "../modules/auth/auth.routes.js";
+import { createCommunityRouter } from "../modules/communities/communities.routes.js";
 import {
   createCommentRouter,
   createFeedRouter,
@@ -49,6 +50,9 @@ export function createV1Router(): Router {
   router.use("/posts", createPostRouter());
   router.use("/comments", createCommentRouter());
   router.use("/feed", createFeedRouter());
+  // Communities (Phase 7). TRD §5 names `/communities`; membership lives under
+  // it because a membership is only ever addressed through its community.
+  router.use("/communities", createCommunityRouter());
 
   return router;
 }

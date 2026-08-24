@@ -340,24 +340,67 @@ describe("Feed visibility", () => {
     expect(await feedIds("following", blocked.token)).not.toContain(post);
   });
 
-  it("excludes community posts entirely (decision J9)", async () => {
-    // Set directly, since the API refuses communityId on create.
+  it("carries public-community posts but no others (Phase 7, decision J2)", async () => {
+    // Phase 6 decision J9 excluded *every* community post here, because no
+    // `Community` could be evaluated. Phase 7 replaced that placeholder: the
+    // feed now admits posts from public, live communities and nothing else.
+    // Set directly, since the API still refuses communityId on generic create.
     const id = await createPost(alice);
-    const community = await prisma.community.findFirst({ select: { id: true } });
+    const community = await prisma.community.findFirst({
+      where: { visibility: "public", deletedAt: null },
+      select: { id: true },
+    });
 
     if (community) {
-      await prisma.post.update({
-        where: { id },
-        data: { communityId: community.id },
-      });
+      await prisma.post.update({ where: { id }, data: { communityId: community.id } });
 
-      expect(await feedIds("latest", alice.token)).not.toContain(id);
-      // …and it is unreadable by anyone but its author until Phase 7.
+      expect(await feedIds("latest", alice.token)).toContain(id);
+      // …and readable by anyone, since the community is public.
       await request(app)
         .get(`/api/v1/posts/${id}`)
         .set(...bearer(bob.token))
-        .expect(404);
+        .expect(200);
     }
+  });
+
+  it("omits a private community post from every filter and 404s it", async () => {
+    const id = await createPost(alice);
+    const community = await prisma.community.create({
+      data: {
+        slug: `feedtest-private-${String(Date.now())}`,
+        name: "Feedtest Private",
+        category: "Testing",
+        visibility: "private",
+        ownerId: alice.userId,
+        memberCount: 1,
+        members: { create: [{ userId: alice.userId, role: "owner" }] },
+      },
+      select: { id: true },
+    });
+
+    await prisma.post.update({ where: { id }, data: { communityId: community.id } });
+
+    // Absent from every filter, including for the member who owns it: the
+    // community page owns that listing, not the global feed.
+    for (const filter of ["latest", "trending", "recommended", "popular_today"]) {
+      expect(await feedIds(filter, alice.token)).not.toContain(id);
+    }
+
+    // Readable directly by the member…
+    await request(app)
+      .get(`/api/v1/posts/${id}`)
+      .set(...bearer(alice.token))
+      .expect(200);
+
+    // …and a 404 to everyone else.
+    await request(app)
+      .get(`/api/v1/posts/${id}`)
+      .set(...bearer(bob.token))
+      .expect(404);
+
+    await prisma.post.update({ where: { id }, data: { communityId: null } });
+    await prisma.communityMember.deleteMany({ where: { communityId: community.id } });
+    await prisma.community.delete({ where: { id: community.id } });
   });
 });
 

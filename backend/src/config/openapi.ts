@@ -1938,6 +1938,553 @@ const postPaths: OpenApiObject = {
   },
 };
 
+export /* ── Communities (Phase 7) ───────────────────────────────────────────────── */
+
+const COMMUNITIES_TAG = "Communities";
+const COMMUNITY_MEMBERS_TAG = "Community Members";
+const COMMUNITY_RESOURCES_TAG = "Community Resources";
+const COMMUNITY_POSTS_TAG = "Community Posts";
+
+const communityRef = { $ref: "#/components/schemas/Community" };
+const communityMemberRef = { $ref: "#/components/schemas/CommunityMemberWithUser" };
+
+const communityEnvelope = envelopeOf({
+  type: "object",
+  properties: {
+    community: communityRef,
+    viewer: {
+      oneOf: [{ $ref: "#/components/schemas/CommunityViewerState" }, { type: "null" }],
+    },
+  },
+});
+
+/** Writes return the community alone; the caller's own state is unchanged. */
+const communityOnlyEnvelope = envelopeOf({
+  type: "object",
+  required: ["community"],
+  properties: { community: communityRef },
+});
+
+const communityPageEnvelope = envelopeOf({
+  type: "object",
+  required: ["items", "nextCursor", "total"],
+  properties: {
+    items: { type: "array", items: { $ref: "#/components/schemas/CommunitySummary" } },
+    nextCursor: { type: ["string", "null"] },
+    total: {
+      type: "null",
+      description:
+        "Always null: a COUNT over the visibility-filtered set costs a second " +
+        "full scan and no shipped surface renders a community total.",
+    },
+  },
+});
+
+const memberPageEnvelope = envelopeOf({
+  type: "object",
+  required: ["items", "nextCursor"],
+  properties: {
+    items: { type: "array", items: communityMemberRef },
+    nextCursor: {
+      type: ["string", "null"],
+      description: "A `userId` — the roster cursors on the (community, user) unique.",
+    },
+  },
+});
+
+const moderatorsEnvelope = envelopeOf({
+  type: "object",
+  required: ["moderators"],
+  properties: { moderators: { type: "array", items: communityMemberRef } },
+});
+
+const memberEnvelope = envelopeOf({
+  type: "object",
+  required: ["member"],
+  properties: { member: communityMemberRef },
+});
+
+const eventEnvelope = envelopeOf({
+  type: "object",
+  required: ["event"],
+  properties: { event: { $ref: "#/components/schemas/CommunityEventDetail" } },
+});
+
+const eventListEnvelope = envelopeOf({
+  type: "object",
+  required: ["events"],
+  properties: {
+    events: {
+      type: "array",
+      items: { $ref: "#/components/schemas/CommunityEventDetail" },
+    },
+  },
+});
+
+const pinsEnvelope = envelopeOf({
+  type: "object",
+  required: ["pinnedPostIds"],
+  properties: {
+    pinnedPostIds: { type: "array", items: { type: "string", format: "uuid" } },
+  },
+});
+
+const communitySortParam = {
+  name: "sort",
+  in: "query",
+  required: false,
+  schema: { type: "string", enum: ["recent", "members"], default: "recent" },
+} as const;
+
+const communityPaths: OpenApiObject = {
+  "/communities": {
+    get: {
+      tags: [COMMUNITIES_TAG],
+      summary: "Discover communities",
+      description:
+        "Cursor-paginated. Public communities are visible to everyone; unlisted " +
+        "ones are readable by slug but never enumerated here, and private ones " +
+        "appear only for their owner, members, and platform admins. A community " +
+        "whose owner has blocked the caller is omitted entirely.",
+      parameters: [
+        ...cursorParams,
+        communitySortParam,
+        {
+          name: "category",
+          in: "query",
+          required: false,
+          schema: { type: "string", maxLength: 60 },
+        },
+        {
+          name: "q",
+          in: "query",
+          required: false,
+          description: "Case-insensitive search across name and description.",
+          schema: { type: "string", minLength: 1, maxLength: 100 },
+        },
+      ],
+      responses: {
+        "200": jsonResponse("A cursor page of communities", communityPageEnvelope),
+        ...errorResponses("422"),
+      },
+    },
+    post: {
+      tags: [COMMUNITIES_TAG],
+      summary: "Create a community",
+      description:
+        "The owner is the authenticated caller, and their `owner` membership row " +
+        "is created in the same transaction — `memberCount` starts at 1. The slug " +
+        "is derived from the name server-side and cannot be chosen or later changed.",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({
+        $ref: "#/components/schemas/CreateCommunityRequest",
+      }),
+      responses: {
+        "201": jsonResponse("Community created", communityOnlyEnvelope),
+        ...errorResponses("401", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}": {
+    get: {
+      tags: [COMMUNITIES_TAG],
+      summary: "A single community",
+      description:
+        "404 — never 403 — when the community is private to the caller, " +
+        "soft-deleted, or owned by someone who has blocked them. `viewer` is null " +
+        "for anonymous callers.",
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse(
+          "The community, plus the caller's relationship to it",
+          communityEnvelope,
+        ),
+        ...errorResponses("404", "422"),
+      },
+    },
+    patch: {
+      tags: [COMMUNITIES_TAG],
+      summary: "Update a community",
+      description: "Requires `edit_community` — owner or admin. The slug is immutable.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({
+        $ref: "#/components/schemas/UpdateCommunityRequest",
+      }),
+      responses: {
+        "200": jsonResponse("Community updated", communityOnlyEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [COMMUNITIES_TAG],
+      summary: "Soft-delete a community",
+      description:
+        "Owner or platform admin. Soft delete with no restore: the community and " +
+        "every post inside it become unreadable, and its tags are released so the " +
+        "shared `Tag.usageCount` does not stay inflated.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse(
+          "Community deleted",
+          envelopeOf({
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              deleted: { type: "boolean", const: true },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/members": {
+    get: {
+      tags: [COMMUNITY_MEMBERS_TAG],
+      summary: "The member roster",
+      parameters: [slugParam, ...cursorParams],
+      responses: {
+        "200": jsonResponse("A cursor page of members", memberPageEnvelope),
+        ...errorResponses("404", "422"),
+      },
+    },
+    post: {
+      tags: [COMMUNITY_MEMBERS_TAG],
+      summary: "Add a member directly",
+      description:
+        "Requires `manage_members` — owner or admin. The only route into a private " +
+        "community, since there is no invitation model. Granting `admin` is " +
+        "owner-only, and `owner` cannot be assigned here at all.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({
+        $ref: "#/components/schemas/AddCommunityMemberRequest",
+      }),
+      responses: {
+        "201": jsonResponse("Member added", memberEnvelope),
+        ...errorResponses("401", "403", "404", "409", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/moderators": {
+    get: {
+      tags: [COMMUNITY_MEMBERS_TAG],
+      summary: "The moderating roster",
+      description:
+        "Owner, admins, and moderators, owner first. Unpaginated — a short " +
+        "bounded set, and the list the shipped sidebar renders.",
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse("The moderating members", moderatorsEnvelope),
+        ...errorResponses("404", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/join": {
+    post: {
+      tags: [COMMUNITY_MEMBERS_TAG],
+      summary: "Join a community",
+      description:
+        "Public and unlisted communities are joined immediately. A private one is " +
+        "a 404 to a non-member, so it never reaches the join rule; a caller who " +
+        "*can* see it and still may not join gets 403. A second join is 409 — the " +
+        "unique constraint is the arbiter, and the counter increment rolls back " +
+        "with the losing insert.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      responses: {
+        "201": jsonResponse(
+          "Joined",
+          envelopeOf({
+            type: "object",
+            required: ["viewer"],
+            properties: {
+              viewer: { $ref: "#/components/schemas/CommunityViewerState" },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "409", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/leave": {
+    delete: {
+      tags: [COMMUNITY_MEMBERS_TAG],
+      summary: "Leave a community",
+      description:
+        "422 for the owner: `Community.ownerId` must always have a membership row, " +
+        "so ownership is transferred first. 409 when the caller was never a member.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse(
+          "Left",
+          envelopeOf({
+            type: "object",
+            required: ["left"],
+            properties: { left: { type: "boolean" } },
+          }),
+        ),
+        ...errorResponses("401", "404", "409", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/members/{username}": {
+    patch: {
+      tags: [COMMUNITY_MEMBERS_TAG],
+      summary: "Change a member's role",
+      description:
+        "The caller must outrank the member's current role **and** be permitted to " +
+        "grant the new one. An admin can therefore manage moderators and members " +
+        "but neither promote to admin nor demote a peer. The owner's own role " +
+        "cannot be changed, and `owner` is never assignable here.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, usernameParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/CommunityRoleRequest" }),
+      responses: {
+        "200": jsonResponse("Role updated", memberEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [COMMUNITY_MEMBERS_TAG],
+      summary: "Remove a member",
+      description:
+        "A member may always remove themselves; removing anyone else requires " +
+        "outranking them. The owner cannot be removed by anyone (422). Removing " +
+        "someone who is not a member is 404.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, usernameParam],
+      responses: {
+        "200": jsonResponse(
+          "Member removed",
+          envelopeOf({
+            type: "object",
+            required: ["removed"],
+            properties: { removed: { type: "boolean" } },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/transfer": {
+    post: {
+      tags: [COMMUNITY_MEMBERS_TAG],
+      summary: "Transfer ownership",
+      description:
+        "Owner of record only — not a community admin, and not a platform admin. " +
+        "One transaction moves `ownerId`, promotes the successor's membership to " +
+        "`owner`, demotes the previous owner to `admin`, and counts the successor " +
+        "if they were not already a member.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/TransferOwnershipRequest" }),
+      responses: {
+        "200": jsonResponse("Ownership transferred", moderatorsEnvelope),
+        ...errorResponses("401", "403", "404", "409", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/rules": {
+    put: {
+      tags: [COMMUNITY_RESOURCES_TAG],
+      summary: "Replace the rule list",
+      description:
+        "Replace-set: the submitted array *is* the rule list and its index becomes " +
+        "the stored position. An empty array clears the rules. Requires " +
+        "`manage_rules` — owner or admin; a moderator cannot rewrite the charter.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/ReplaceRulesRequest" }),
+      responses: {
+        "200": jsonResponse("Rules updated", communityOnlyEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/tags": {
+    put: {
+      tags: [COMMUNITY_RESOURCES_TAG],
+      summary: "Replace the tag set",
+      description:
+        "Attaches only to existing `Tag` rows — an unknown reference is 422 rather " +
+        "than an implicit create. `Tag.usageCount` is shared with project tags and " +
+        "moved transactionally, guarded so it can never go negative.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/ReplaceTagsRequest" }),
+      responses: {
+        "200": jsonResponse("Tags updated", communityOnlyEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/events": {
+    get: {
+      tags: [COMMUNITY_RESOURCES_TAG],
+      summary: "Community events",
+      parameters: [
+        slugParam,
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 50, default: 10 },
+        },
+        {
+          name: "includePast",
+          in: "query",
+          required: false,
+          schema: { type: "boolean", default: false },
+        },
+      ],
+      responses: {
+        "200": jsonResponse("The community's events", eventListEnvelope),
+        ...errorResponses("404", "422"),
+      },
+    },
+    post: {
+      tags: [COMMUNITY_RESOURCES_TAG],
+      summary: "Create an event",
+      description:
+        "Requires `manage_events` — moderator and above. `attendeeCount` is never " +
+        "accepted and never returned: no RSVP model exists, so nothing could " +
+        "maintain it.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/CreateEventRequest" }),
+      responses: {
+        "201": jsonResponse("Event created", eventEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/events/{id}": {
+    patch: {
+      tags: [COMMUNITY_RESOURCES_TAG],
+      summary: "Update an event",
+      description:
+        "A patch moving only `startsAt` is validated against the **stored** " +
+        "`endsAt`, so a one-field change cannot invert an event.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, childIdParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/UpdateEventRequest" }),
+      responses: {
+        "200": jsonResponse("Event updated", eventEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [COMMUNITY_RESOURCES_TAG],
+      summary: "Delete an event",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, childIdParam],
+      responses: {
+        "200": jsonResponse(
+          "Event deleted",
+          envelopeOf({
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              deleted: { type: "boolean", const: true },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/pins": {
+    get: {
+      tags: [COMMUNITY_RESOURCES_TAG],
+      summary: "Pinned post ids",
+      description: "A post deleted after being pinned drops out of this list.",
+      parameters: [slugParam],
+      responses: {
+        "200": jsonResponse("The pinned post ids", pinsEnvelope),
+        ...errorResponses("404", "422"),
+      },
+    },
+    post: {
+      tags: [COMMUNITY_RESOURCES_TAG],
+      summary: "Pin a post",
+      description:
+        "Requires `pin_posts` — moderator and above. The post must already belong " +
+        "to this community and not be deleted; anything else is 404, which avoids " +
+        "confirming a post the caller may have no right to know about. A duplicate " +
+        "pin is 409 — the composite primary key is the arbiter.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/PinPostRequest" }),
+      responses: {
+        "201": jsonResponse("Post pinned", pinsEnvelope),
+        ...errorResponses("401", "403", "404", "409", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/pins/{id}": {
+    delete: {
+      tags: [COMMUNITY_RESOURCES_TAG],
+      summary: "Unpin a post",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam, childIdParam],
+      responses: {
+        "200": jsonResponse("Post unpinned", pinsEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/communities/{slug}/posts": {
+    get: {
+      tags: [COMMUNITY_POSTS_TAG],
+      summary: "The community's posts",
+      description:
+        "Cursor-paginated, and distinct from the global feed: the feed admits only " +
+        "public communities, so a private community's members read its posts here. " +
+        "Soft-deleted posts and blocked authors are excluded.",
+      parameters: [slugParam, ...cursorParams],
+      responses: {
+        "200": jsonResponse("A cursor page of posts", feedEnvelope),
+        ...errorResponses("404", "422"),
+      },
+    },
+    post: {
+      tags: [COMMUNITY_POSTS_TAG],
+      summary: "Post into a community",
+      description:
+        "The **only** way a post acquires a `communityId`, and it comes from this " +
+        "route rather than the body — `CreatePostRequest` has no such field. " +
+        "Requires `create_post`, which is a membership grant: a non-member is " +
+        "refused even in a public community, and so is a platform admin who has " +
+        "not joined, because posting is participation rather than moderation.",
+      security: [{ bearerAuth: [] }],
+      parameters: [slugParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/CreatePostRequest" }),
+      responses: {
+        "201": jsonResponse("Post created", postEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+};
+
 export const openApiDocument: OpenApiDocument = {
   openapi: "3.1.0",
   info: {
@@ -1977,6 +2524,296 @@ export const openApiDocument: OpenApiDocument = {
       },
     },
     schemas: {
+      /* ── Communities (Phase 7) ───────────────────────────────────────── */
+
+      Community: {
+        type: "object",
+        required: [
+          "id",
+          "slug",
+          "name",
+          "description",
+          "avatarUrl",
+          "bannerUrl",
+          "category",
+          "tags",
+          "rules",
+          "moderatorIds",
+          "memberCount",
+          "pinnedPostIds",
+          "events",
+          "createdAt",
+          "visibility",
+          "ownerId",
+          "owner",
+        ],
+        description:
+          "Mirrors the frontend's `Community` key for key, plus three additive " +
+          "fields (`visibility`, `ownerId`, `owner`). `deletedAt` is never emitted: " +
+          "it would let a client distinguish soft-deleted from never-existing, " +
+          "which is the distinction the 404 exists to erase.",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          slug: { type: "string", pattern: "^[a-z0-9-]+$" },
+          name: { type: "string" },
+          description: { type: "string" },
+          avatarUrl: { type: ["string", "null"] },
+          bannerUrl: { type: ["string", "null"] },
+          category: { type: "string" },
+          tags: {
+            type: "array",
+            items: { type: "string" },
+            description: "Display names, flattened from the shared Tag taxonomy.",
+          },
+          rules: {
+            type: "array",
+            items: { type: "string" },
+            description: "In stored position order — the array sequence is the contract.",
+          },
+          moderatorIds: {
+            type: "array",
+            items: { type: "string", format: "uuid" },
+            description: "Owner, admins, and moderators — everyone who runs the place.",
+          },
+          memberCount: { type: "integer", minimum: 0 },
+          pinnedPostIds: { type: "array", items: { type: "string", format: "uuid" } },
+          events: {
+            type: "array",
+            items: { $ref: "#/components/schemas/CommunityEvent" },
+          },
+          createdAt: { type: "string", format: "date-time" },
+          visibility: { type: "string", enum: ["public", "private", "unlisted"] },
+          ownerId: { type: "string", format: "uuid" },
+          owner: { $ref: "#/components/schemas/UserSummary" },
+        },
+      },
+
+      CommunitySummary: {
+        type: "object",
+        required: [
+          "id",
+          "slug",
+          "name",
+          "description",
+          "category",
+          "tags",
+          "memberCount",
+          "createdAt",
+          "visibility",
+        ],
+        description:
+          "The discovery-card shape. Rules, events, pins, and the moderator list " +
+          "are per-community sub-queries the grid does not render.",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          slug: { type: "string" },
+          name: { type: "string" },
+          description: { type: "string" },
+          avatarUrl: { type: ["string", "null"] },
+          bannerUrl: { type: ["string", "null"] },
+          category: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          memberCount: { type: "integer", minimum: 0 },
+          createdAt: { type: "string", format: "date-time" },
+          visibility: { type: "string", enum: ["public", "private", "unlisted"] },
+        },
+      },
+
+      CommunityEvent: {
+        type: "object",
+        required: ["id", "title", "startsAt", "endsAt"],
+        description:
+          "The four fields the shipped widget reads. `attendeeCount` is " +
+          "deliberately absent: no RSVP model exists, so no write path could move " +
+          "it, and a permanent zero would read as 'nobody is attending'.",
+        properties: {
+          id: { type: "string", format: "uuid" },
+          title: { type: "string" },
+          startsAt: { type: "string", format: "date-time" },
+          endsAt: { type: ["string", "null"], format: "date-time" },
+        },
+      },
+
+      CommunityEventDetail: {
+        allOf: [
+          { $ref: "#/components/schemas/CommunityEvent" },
+          {
+            type: "object",
+            required: ["description", "isOnline", "location"],
+            properties: {
+              description: { type: "string" },
+              isOnline: { type: "boolean" },
+              location: { type: ["string", "null"] },
+            },
+          },
+        ],
+      },
+
+      CommunityMemberWithUser: {
+        type: "object",
+        required: ["userId", "role", "joinedAt", "user"],
+        properties: {
+          userId: { type: "string", format: "uuid" },
+          role: { type: "string", enum: ["owner", "admin", "moderator", "member"] },
+          joinedAt: { type: "string", format: "date-time" },
+          user: { $ref: "#/components/schemas/UserSummary" },
+        },
+      },
+
+      CommunityViewerState: {
+        type: "object",
+        required: [
+          "isOwner",
+          "isMember",
+          "role",
+          "canJoin",
+          "canPost",
+          "canEdit",
+          "canManageMembers",
+          "canModerate",
+        ],
+        description:
+          "Viewer-relative affordances, so the page renders Join/Leave and " +
+          "moderation controls without a second request. There is deliberately no " +
+          "field saying *why* access was granted.",
+        properties: {
+          isOwner: { type: "boolean" },
+          isMember: { type: "boolean" },
+          role: {
+            oneOf: [
+              { type: "string", enum: ["owner", "admin", "moderator", "member"] },
+              { type: "null" },
+            ],
+          },
+          canJoin: { type: "boolean" },
+          canPost: { type: "boolean" },
+          canEdit: { type: "boolean" },
+          canManageMembers: { type: "boolean" },
+          canModerate: { type: "boolean" },
+        },
+      },
+
+      CreateCommunityRequest: {
+        type: "object",
+        required: ["name", "category"],
+        description:
+          "No `slug`, `ownerId`, or `memberCount`: all are server-owned. Unknown " +
+          "keys are stripped rather than rejected, so they never reach a repository.",
+        properties: {
+          name: { type: "string", minLength: 2, maxLength: 80 },
+          category: { type: "string", minLength: 1, maxLength: 60 },
+          description: { type: "string", maxLength: 2000 },
+          tags: { type: "array", maxItems: 10, items: { type: "string", maxLength: 40 } },
+          visibility: { type: "string", enum: ["public", "private", "unlisted"] },
+          avatarUrl: { type: ["string", "null"], maxLength: 500 },
+          bannerUrl: { type: ["string", "null"], maxLength: 500 },
+        },
+      },
+
+      UpdateCommunityRequest: {
+        type: "object",
+        minProperties: 1,
+        description: "At least one field. The slug is immutable and absent here.",
+        properties: {
+          name: { type: "string", minLength: 2, maxLength: 80 },
+          category: { type: "string", minLength: 1, maxLength: 60 },
+          description: { type: "string", maxLength: 2000 },
+          tags: { type: "array", maxItems: 10, items: { type: "string", maxLength: 40 } },
+          visibility: { type: "string", enum: ["public", "private", "unlisted"] },
+          avatarUrl: { type: ["string", "null"], maxLength: 500 },
+          bannerUrl: { type: ["string", "null"], maxLength: 500 },
+        },
+      },
+
+      AddCommunityMemberRequest: {
+        type: "object",
+        required: ["username"],
+        properties: {
+          username: { type: "string", pattern: "^[a-z0-9._]+$", maxLength: 30 },
+          role: {
+            type: "string",
+            enum: ["admin", "moderator", "member"],
+            default: "member",
+            description: "`owner` is absent: ownership moves only through transfer.",
+          },
+        },
+      },
+
+      CommunityRoleRequest: {
+        type: "object",
+        required: ["role"],
+        properties: {
+          role: { type: "string", enum: ["admin", "moderator", "member"] },
+        },
+      },
+
+      TransferOwnershipRequest: {
+        type: "object",
+        required: ["username"],
+        properties: {
+          username: { type: "string", pattern: "^[a-z0-9._]+$", maxLength: 30 },
+        },
+      },
+
+      ReplaceRulesRequest: {
+        type: "object",
+        required: ["rules"],
+        properties: {
+          rules: {
+            type: "array",
+            maxItems: 30,
+            items: { type: "string", minLength: 1, maxLength: 500 },
+            description: "An empty array clears the rules.",
+          },
+        },
+      },
+
+      ReplaceTagsRequest: {
+        type: "object",
+        required: ["tags"],
+        properties: {
+          tags: {
+            type: "array",
+            maxItems: 10,
+            items: { type: "string", minLength: 1, maxLength: 40 },
+            description: "Display names or slugs; must already exist in the taxonomy.",
+          },
+        },
+      },
+
+      CreateEventRequest: {
+        type: "object",
+        required: ["title", "startsAt"],
+        description: "`attendeeCount` is not accepted — there is no writer for it.",
+        properties: {
+          title: { type: "string", minLength: 2, maxLength: 140 },
+          startsAt: { type: "string", format: "date-time" },
+          endsAt: { type: ["string", "null"], format: "date-time" },
+          description: { type: "string", maxLength: 2000 },
+          isOnline: { type: "boolean", default: true },
+          location: { type: ["string", "null"], maxLength: 200 },
+        },
+      },
+
+      UpdateEventRequest: {
+        type: "object",
+        minProperties: 1,
+        properties: {
+          title: { type: "string", minLength: 2, maxLength: 140 },
+          startsAt: { type: "string", format: "date-time" },
+          endsAt: { type: ["string", "null"], format: "date-time" },
+          description: { type: "string", maxLength: 2000 },
+          isOnline: { type: "boolean" },
+          location: { type: ["string", "null"], maxLength: 200 },
+        },
+      },
+
+      PinPostRequest: {
+        type: "object",
+        required: ["postId"],
+        properties: { postId: { type: "string", format: "uuid" } },
+      },
+
       SuccessEnvelope: {
         type: "object",
         required: ["success", "data", "message", "error"],
@@ -2914,6 +3751,7 @@ export const openApiDocument: OpenApiDocument = {
     ...userPaths,
     ...projectPaths,
     ...postPaths,
+    ...communityPaths,
   },
 };
 

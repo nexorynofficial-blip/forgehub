@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, Visibility } from "@prisma/client";
 
 import { prisma } from "../../database/prisma.js";
 import { summarySelect } from "../users/users.repository.js";
@@ -110,21 +110,42 @@ export interface RepoViewer {
  * the rules to, and this is what stops a hidden post consuming a page slot or
  * inflating a count. If the two disagreed, paging would return short pages.
  *
- * `communityId: null` implements decision J9 — community posts are excluded
- * from every listing, for everyone, until Phase 7 can evaluate the community.
+ * **Phase 7 seam.** Phase 6 decision J9 welded `communityId: null` here,
+ * excluding every community post from every listing because no `Community`
+ * existed to evaluate. Phase 7 replaces that with the real rule (decision J2):
+ * a post either belongs to no community, or belongs to one that is **public
+ * and not deleted**. Nothing else about this filter changed — a non-community
+ * post takes exactly the branch it took before, since `communityId: null`
+ * remains the first arm of the disjunction.
+ *
+ * Membership is deliberately *not* consulted here. The global feed carries
+ * public-community posts only; a member reads their private community's posts
+ * on the community page, which owns its own scoped listing. Widening this to
+ * "public OR I am a member" would mix private-community content into
+ * `following`, `trending`, and `popular_today` — the leak decision J2 exists to
+ * prevent.
  */
-function listVisibilityWhere(viewer: RepoViewer): Prisma.PostWhereInput {
-  const base: Prisma.PostWhereInput = { deletedAt: null, communityId: null };
+const COMMUNITY_LISTABLE: Prisma.PostWhereInput[] = [
+  { communityId: null },
+  { community: { visibility: "public", deletedAt: null } },
+];
 
+function listVisibilityWhere(viewer: RepoViewer): Prisma.PostWhereInput {
   if (viewer.id === null) {
-    return { ...base, visibility: "public" };
+    return { deletedAt: null, visibility: "public", OR: COMMUNITY_LISTABLE };
   }
 
   return {
-    ...base,
+    deletedAt: null,
     // A post is invisible to a viewer its author has blocked (Phase 4 Block).
     author: { blocksMade: { none: { blockedId: viewer.id } } },
-    OR: [{ visibility: "public" }, { authorId: viewer.id }],
+    // Two independent disjunctions — the community rule and the post-visibility
+    // rule — combined under `AND` so neither silently replaces the other, which
+    // is what a second `OR` key in one object literal would do.
+    AND: [
+      { OR: COMMUNITY_LISTABLE },
+      { OR: [{ visibility: "public" }, { authorId: viewer.id }] },
+    ],
   };
 }
 
@@ -388,6 +409,12 @@ export interface CreatePostData {
   content: string;
   visibility: import("@prisma/client").Visibility;
   projectId: string | null;
+  /**
+   * Phase 7 (decision J3). Supplied only by the community post route, which
+   * derives it from the resolved community — never from a request body, and
+   * `createPostSchema` still has no such field. Null for an ordinary post.
+   */
+  communityId?: string | null;
   codeLanguage: string | null;
   codeContent: string | null;
   media: {
@@ -414,6 +441,8 @@ export async function createPost(data: CreatePostData): Promise<PostDetailRow> {
         content: data.content,
         visibility: data.visibility,
         projectId: data.projectId,
+        // Phase 7: null unless the community post route supplied it.
+        communityId: data.communityId ?? null,
         codeLanguage: data.codeLanguage,
         codeContent: data.codeContent,
         ...(data.media.length > 0
@@ -733,4 +762,95 @@ export async function findVotesForPolls(
   });
 
   return new Map(rows.map((row) => [row.pollId, row.optionId]));
+}
+
+/**
+ * Of these post ids, which are still live (not soft-deleted).
+ *
+ * Added in Phase 7 for the community pin list: a pin is only a reference, and a
+ * post that was pinned and later deleted must drop out of the list rather than
+ * be resurrected by the join. Additive — no Phase 6 caller is affected.
+ */
+export async function findLiveIds(ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+
+  const rows = await prisma.post.findMany({
+    where: { id: { in: ids }, deletedAt: null },
+    select: { id: true },
+  });
+
+  return new Set(rows.map((row) => row.id));
+}
+
+/* ── Phase 7 seam (decision J2) ──────────────────────────────────────────── */
+
+/**
+ * The community's visibility and delete state, for the post visibility gate.
+ *
+ * Added in Phase 7. Reads the `Community` table directly rather than calling
+ * into the communities module, keeping the dependency one-way: the older,
+ * closed posts module must not import a sibling service that itself reads
+ * posts, which would be a cycle.
+ */
+export async function findCommunityStanding(
+  communityId: string,
+): Promise<{ visibility: Visibility; deletedAt: Date | null } | null> {
+  return prisma.community.findUnique({
+    where: { id: communityId },
+    select: { visibility: true, deletedAt: true },
+  });
+}
+
+/** Whether the viewer holds a membership row in that community. */
+export async function findCommunityMembership(
+  communityId: string,
+  userId: string,
+): Promise<boolean> {
+  const row = await prisma.communityMember.findUnique({
+    where: { communityId_userId: { communityId, userId } },
+    select: { userId: true },
+  });
+  return row !== null;
+}
+
+/**
+ * Posts belonging to one community, cursor-paginated.
+ *
+ * Deliberately **not** routed through `listVisibilityWhere`: that filter serves
+ * the *global* feed and admits only public communities, which would return an
+ * empty page for the private community whose own page is being rendered. The
+ * community's visibility is settled by the caller's gate before this runs, so
+ * what remains here is the post-level rule — soft deletes, blocked authors, and
+ * the author's own private posts.
+ */
+export async function listCommunityPosts(
+  communityId: string,
+  viewer: RepoViewer,
+  cursor: string | undefined,
+  take: number,
+): Promise<PostDetailRow[]> {
+  const where: Prisma.PostWhereInput =
+    viewer.id === null
+      ? { communityId, deletedAt: null, visibility: "public" }
+      : {
+          communityId,
+          deletedAt: null,
+          author: { blocksMade: { none: { blockedId: viewer.id } } },
+          OR: [{ visibility: "public" }, { authorId: viewer.id }],
+        };
+
+  return prisma.post.findMany({
+    where,
+    select: postDetailSelect,
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: take + 1,
+    ...(cursor !== undefined ? { cursor: { id: cursor }, skip: 1 } : {}),
+  });
+}
+
+/** Creates a post inside a community. `communityId` is never client-supplied. */
+export async function createCommunityPost(
+  data: CreatePostData & { communityId: string },
+): Promise<PostDetailRow> {
+  return createPost(data);
 }

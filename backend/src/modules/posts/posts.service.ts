@@ -6,7 +6,7 @@ import { AuditAction, recordAuditEvent, type AuditContext } from "../../utils/au
 import { AppError } from "../../utils/errors.js";
 import * as follows from "../follows/follows.repository.js";
 import { parseMentions } from "./mentions.js";
-import { resolvePostVisibility } from "./post.visibility.js";
+import { resolvePostVisibility, type CommunityStanding } from "./post.visibility.js";
 import { toPostView } from "./post.view.js";
 import * as repo from "./posts.repository.js";
 import type { CreatePostInput, UpdatePostInput } from "./posts.schema.js";
@@ -74,6 +74,11 @@ export async function loadVisiblePost(
       ? await follows.isBlocking(row.authorId, viewer.id)
       : false;
 
+  // Phase 7 seam: resolves the community's standing for this viewer, or null
+  // for an ordinary post. Phase 6 passed `inCommunity: row.communityId !== null`
+  // here, which made every community post author-only.
+  const community = await resolveCommunityStanding(row.communityId, viewer);
+
   const decision = resolvePostVisibility({
     viewerId: viewer.id,
     viewerRole: viewer.role,
@@ -81,7 +86,7 @@ export async function loadVisiblePost(
     visibility: row.visibility,
     deleted: row.deletedAt !== null,
     authorBlockedViewer,
-    inCommunity: row.communityId !== null,
+    community,
   });
 
   if (decision === "not_found") {
@@ -252,6 +257,35 @@ export async function create(
   input: CreatePostInput,
   auditContext: AuditContext,
 ): Promise<PostView> {
+  return createInternal(actor, input, null, auditContext);
+}
+
+/**
+ * Creates a post inside a community (Phase 7, decision J3).
+ *
+ * `communityId` is a parameter, never a field of `input` — `createPostSchema`
+ * has no such key, so a client cannot select the community by sending one. The
+ * caller has already resolved it from the route and checked `create_post`
+ * membership.
+ *
+ * Every other rule is Phase 6's, untouched: the same validation, the same
+ * counters, the same mention announcement, the same projection.
+ */
+export async function createInCommunity(
+  actor: Actor,
+  input: CreatePostInput,
+  communityId: string,
+  auditContext: AuditContext,
+): Promise<PostView> {
+  return createInternal(actor, input, communityId, auditContext);
+}
+
+async function createInternal(
+  actor: Actor,
+  input: CreatePostInput,
+  communityId: string | null,
+  auditContext: AuditContext,
+): Promise<PostView> {
   if (input.projectId !== undefined && input.projectId !== null) {
     await assertProjectAttribution(input.projectId, actor.id);
   }
@@ -262,6 +296,7 @@ export async function create(
     content: input.content,
     visibility: input.visibility ?? "public",
     projectId: input.projectId ?? null,
+    communityId,
     codeLanguage: input.codeSnippet?.language ?? null,
     codeContent: input.codeSnippet?.code ?? null,
     media: mediaFrom(input) ?? [],
@@ -353,3 +388,47 @@ export function isUniqueViolation(error: unknown): boolean {
 }
 
 export { isAdmin };
+
+/* ── Phase 7 seam (decision J2) ──────────────────────────────────────────── */
+
+/**
+ * Resolves how a post's community bears on this viewer's access.
+ *
+ * Added in Phase 7 to replace decision J9's placeholder, which made every post
+ * carrying a `communityId` author-only because no `Community` existed to
+ * evaluate. Returns `null` for an ordinary post, so a non-community post takes
+ * exactly the path it took in Phase 6.
+ *
+ * Lives here rather than in `communities/` to keep the dependency pointing one
+ * way — the posts module is the older, closed one, and having it import a
+ * *repository* rather than a sibling service avoids a cycle through
+ * `communities.service`, which itself reads posts for pinning.
+ */
+async function resolveCommunityStanding(
+  communityId: string | null,
+  viewer: Viewer,
+): Promise<CommunityStanding | null> {
+  if (communityId === null) return null;
+
+  const community = await repo.findCommunityStanding(communityId);
+
+  // A community row that has vanished leaves its posts unreachable rather than
+  // promoting them to ordinary posts (decision J13).
+  if (community === null) return "hidden";
+  if (community.deletedAt !== null) return "hidden";
+
+  if (community.visibility === "public") return "listable";
+
+  // Unlisted: readable by anyone holding the id, never enumerable.
+  if (community.visibility === "unlisted") return "readable";
+
+  // Private from here down — members and platform admins only.
+  if (viewer.id !== null) {
+    const membership = await repo.findCommunityMembership(communityId, viewer.id);
+    if (membership) return "readable";
+  }
+
+  if (viewer.role !== null && isAdmin(viewer.role)) return "readable";
+
+  return "hidden";
+}

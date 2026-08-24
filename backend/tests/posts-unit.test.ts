@@ -35,7 +35,7 @@ const base: PostVisibilityContext = {
   visibility: "public",
   deleted: false,
   authorBlockedViewer: false,
-  inCommunity: false,
+  community: null,
 };
 
 describe("Post visibility", () => {
@@ -102,27 +102,52 @@ describe("Post visibility", () => {
   });
 });
 
-describe("Community posts (decision J9)", () => {
-  const communityPost = { ...base, inCommunity: true };
+describe("Community posts (Phase 7 seam, decision J2)", () => {
+  // Phase 6 decision J9 made every community post author-only, because no
+  // `Community` existed to evaluate. Phase 7 supplies the community's resolved
+  // standing instead; these assertions moved with it.
 
-  it("is author-only until Phase 7 can evaluate the community", () => {
-    expect(resolvePostVisibility(communityPost)).toBe("not_found");
-    expect(resolvePostVisibility({ ...communityPost, viewerId: "author-1" })).toBe(
-      "full",
+  it("reads a post in a readable community under the normal post rules", () => {
+    const readable = { ...base, community: "readable" as const };
+    expect(resolvePostVisibility(readable)).toBe("full");
+    expect(resolvePostVisibility({ ...readable, visibility: "private" })).toBe(
+      "not_found",
     );
   });
 
-  it("is hidden even from an admin, who cannot stand in for membership", () => {
+  it("hides a post in a hidden community from everyone, author included", () => {
+    // A private community the viewer does not belong to, or a deleted one
+    // (decision J13) — the author does not get their post back either.
+    const hidden = { ...base, community: "hidden" as const };
+    expect(resolvePostVisibility(hidden)).toBe("not_found");
+    expect(resolvePostVisibility({ ...hidden, viewerId: "author-1" })).toBe("not_found");
+    expect(resolvePostVisibility({ ...hidden, viewerRole: "platform_admin" })).toBe(
+      "not_found",
+    );
+  });
+
+  it("applies the community gate before the post visibility", () => {
+    // A `public` post inside a private community is private. Reversing the
+    // order would expose every private community, since posts default public.
     expect(
-      resolvePostVisibility({ ...communityPost, viewerRole: "platform_admin" }),
+      resolvePostVisibility({ ...base, community: "hidden", visibility: "public" }),
     ).toBe("not_found");
   });
 
-  it("never appears in a listing, not even for its own author", () => {
-    // The feed is a cross-cutting surface; a post whose audience this phase
-    // cannot compute does not belong in it.
-    expect(isPostListable(communityPost)).toBe(false);
-    expect(isPostListable({ ...communityPost, viewerId: "author-1" })).toBe(false);
+  it("lists only posts in a listable community", () => {
+    expect(isPostListable({ ...base, community: "listable" })).toBe(true);
+    // Readable but not public — a private community a member belongs to. Its
+    // posts live on the community page, never in the global feed.
+    expect(isPostListable({ ...base, community: "readable" })).toBe(false);
+    expect(isPostListable({ ...base, community: "hidden" })).toBe(false);
+    expect(isPostListable({ ...base, community: "readable", viewerId: "author-1" })).toBe(
+      false,
+    );
+  });
+
+  it("leaves non-community posts on exactly the Phase 6 path", () => {
+    expect(resolvePostVisibility({ ...base, community: null })).toBe("full");
+    expect(isPostListable({ ...base, community: null })).toBe(true);
   });
 });
 

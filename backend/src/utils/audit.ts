@@ -74,6 +74,20 @@ export const AuditAction = {
   POST_CREATED: "POST_CREATED",
   POST_DELETED: "POST_DELETED",
   COMMENT_DELETED: "COMMENT_DELETED",
+
+  /* Phase 7 — communities (decision J15). `COMMUNITY_ROLE_CHANGED` is named
+     directly by BACKEND_ARCHITECTURE.md §26; the rest are its neighbours, on
+     the reasoning Phase 5 used for project membership — a role grant is only
+     meaningful alongside a record of who was added, who was removed, and who
+     handed the community over. Joining and leaving are deliberately *not*
+     audited: like follows, they are high-volume ordinary activity, and a
+     self-join confers no authority over anyone else. */
+  COMMUNITY_CREATED: "COMMUNITY_CREATED",
+  COMMUNITY_DELETED: "COMMUNITY_DELETED",
+  COMMUNITY_MEMBER_ADDED: "COMMUNITY_MEMBER_ADDED",
+  COMMUNITY_MEMBER_REMOVED: "COMMUNITY_MEMBER_REMOVED",
+  COMMUNITY_ROLE_CHANGED: "COMMUNITY_ROLE_CHANGED",
+  COMMUNITY_OWNERSHIP_TRANSFERRED: "COMMUNITY_OWNERSHIP_TRANSFERRED",
 } as const;
 
 export type AuditActionValue = (typeof AuditAction)[keyof typeof AuditAction];

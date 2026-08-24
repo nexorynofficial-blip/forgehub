@@ -3,12 +3,13 @@
 REST + realtime API for the ForgeHub platform. Serves the existing Next.js
 frontend at the repository root (`../src`), which is complete and unchanged.
 
-**Status: Backend Phase 6 (Posts, Comments & Feed) complete.** Phases 1–6 have
-landed: infrastructure, the full database schema, authentication, the
-users/profiles + follow-graph slice, the project aggregate, and the social
-surface — posts, media, polls, comments, engagement, and the feed. Communities,
-messaging, notifications, search, and admin are later phases and are
-deliberately not implemented.
+**Status: Backend Phase 7 (Communities) complete.** Phases 1–7 have landed:
+infrastructure, the full database schema, authentication, the users/profiles +
+follow-graph slice, the project aggregate, the social surface (posts, media,
+polls, comments, engagement, the feed), and communities — membership, roles,
+ownership, rules, tags, events, pinned posts, and community posts. Messaging,
+notification delivery, search, and admin are later phases and are deliberately
+not implemented.
 
 ## Stack
 
@@ -183,19 +184,20 @@ message for any 5xx is replaced with a generic string.
 
 ## Endpoints
 
-| Method | Path                   | Purpose                                                                              |
-| ------ | ---------------------- | ------------------------------------------------------------------------------------ |
-| GET    | `/health`              | Liveness. Checks nothing external — always 200 if up.                                |
-| GET    | `/ready`               | Readiness. 200 only if Postgres **and** Redis respond.                               |
-| GET    | `/api/v1`              | Version discovery.                                                                   |
-| GET    | `/api/v1/openapi.json` | OpenAPI 3.1 document.                                                                |
-| GET    | `/api/v1/docs`         | Swagger UI. Disabled in production.                                                  |
-| —      | `/api/v1/auth/*`       | 17 authentication endpoints — see docs/AUTHENTICATION.md.                            |
-| —      | `/api/v1/users/*`      | 12 profile / settings / social-graph endpoints — see docs/USERS_AND_SOCIAL_GRAPH.md. |
-| —      | `/api/v1/projects/*`   | 24 operations over 13 paths, plus `/users/:username/projects`. See docs/PROJECTS.md. |
-| —      | `/api/v1/posts/*`      | Posts, comments, likes, bookmarks, polls. See docs/POSTS_AND_FEED.md.                |
-| —      | `/api/v1/comments/*`   | Comment edit, delete, replies, likes.                                                |
-| —      | `/api/v1/feed`         | The social feed and its six filters, plus `/feed/new-count`.                         |
+| Method | Path                    | Purpose                                                                                                                           |
+| ------ | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/health`               | Liveness. Checks nothing external — always 200 if up.                                                                             |
+| GET    | `/ready`                | Readiness. 200 only if Postgres **and** Redis respond.                                                                            |
+| GET    | `/api/v1`               | Version discovery.                                                                                                                |
+| GET    | `/api/v1/openapi.json`  | OpenAPI 3.1 document.                                                                                                             |
+| GET    | `/api/v1/docs`          | Swagger UI. Disabled in production.                                                                                               |
+| —      | `/api/v1/auth/*`        | 17 authentication endpoints — see docs/AUTHENTICATION.md.                                                                         |
+| —      | `/api/v1/users/*`       | 12 profile / settings / social-graph endpoints — see docs/USERS_AND_SOCIAL_GRAPH.md.                                              |
+| —      | `/api/v1/projects/*`    | 24 operations over 13 paths, plus `/users/:username/projects`. See docs/PROJECTS.md.                                              |
+| —      | `/api/v1/posts/*`       | Posts, comments, likes, bookmarks, polls. See docs/POSTS_AND_FEED.md.                                                             |
+| —      | `/api/v1/comments/*`    | Comment edit, delete, replies, likes.                                                                                             |
+| —      | `/api/v1/feed`          | The social feed and its six filters, plus `/feed/new-count`.                                                                      |
+| —      | `/api/v1/communities/*` | 24 operations over 15 paths — discovery, membership, roles, ownership, rules, tags, events, pins, posts. See docs/COMMUNITIES.md. |
 
 Probes sit at the root, not under `/api/v1`, so orchestrator config does not
 change when the API version does. They are also registered _before_ the rate

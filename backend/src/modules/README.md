@@ -81,6 +81,19 @@ for the root and every child (milestone writes and the `progressPercent` they
 derive must share a transaction), with **a service and controller per child**
 where the business rules genuinely differ. See `docs/PROJECTS.md`.
 
+## `communities/`
+
+The Phase 7 aggregate. Same shape as `projects/` — one gate
+(`loadVisibleCommunity`), a pure permission table, a repository that owns every
+Prisma call, and a service per child area where the rules genuinely differ
+(`members`, `resources`, `posts`).
+
+One deliberate divergence from `projects/`: the community detail select loads
+**only moderating members**, because a community can hold thousands. The
+viewer's own membership is therefore queried separately by the gate — inferring
+it from that filtered array would deny every ordinary member access to their own
+private community. See `docs/COMMUNITIES.md`.
+
 ## Cross-module dependencies
 
 Modules may depend on those above them, never below:
@@ -94,10 +107,30 @@ projects ──►  users       (owners/members/authors reuse `toUserSummary`)
 projects ──►  follows     (a blocked viewer cannot see the blocker's projects)
 posts    ──►  users       (authors reuse `toUserSummary`)
 posts    ──►  follows     (blocking, and the "following" feed filter)
+posts    ──►  (Community)  Phase 7 reads `Community` **through its own
+                           repository**, not the communities service — see below
+communities ► users      (owners/members reuse `toUserSummary`)
+communities ► follows    (a blocked viewer cannot see the blocker's community)
+communities ► posts      (community posts reuse the Phase 6 create, projection,
+                           counters, and validation wholesale)
 ```
 
 `projects` and `posts` each depend on `users` and `follows`; neither depends on
-the other, and nothing depends on either.
+the other. `communities` depends on all three.
+
+### The posts ↔ communities seam (Phase 7)
+
+The dependency between these two runs **one way at the service layer**:
+`communities/posts.service.ts` calls into `posts.service`, never the reverse.
+
+But post visibility genuinely needs the community — a post in a private
+community must 404 for a non-member. Rather than have the older, closed posts
+module import a sibling _service_ (which itself reads posts, for pinning, and
+would close a cycle), `posts.repository.ts` gained two narrow reads of the
+`Community` and `CommunityMember` tables. The rule they feed lives in
+`post.visibility.ts` as a `CommunityStanding`, resolved by the caller.
+
+See `docs/COMMUNITIES.md` §10 for what changed and why.
 
 `users` and `follows` reference each other's **repositories and pure helpers**,
 not each other's services, which keeps the cycle out of the business layer.
