@@ -5,6 +5,7 @@ import { env } from "../config/env.js";
 import { logger } from "../utils/logger.js";
 import { authenticateSocket, userRoom, type AuthenticatedSocket } from "./auth.socket.js";
 import { registerMessageHandlers } from "./message.socket.js";
+import { registerNotificationHandlers } from "./notification.socket.js";
 import { registerPresenceHandlers, stopPresenceTracking } from "./presence.socket.js";
 
 /**
@@ -42,6 +43,10 @@ function registerSocketHandlers(socket: Socket): void {
   // identity from a payload.
   registerMessageHandlers(authenticated);
   registerPresenceHandlers(authenticated);
+  // Phase 9. Registers no inbound handlers — `notification:new` is emitted to
+  // the user room joined above — but is wired here so all three feature
+  // modules attach the same way.
+  registerNotificationHandlers(authenticated);
 
   socket.on("disconnect", (reason) => {
     logger.debug({ socketId: socket.id, userId: user.id, reason }, "Socket disconnected");

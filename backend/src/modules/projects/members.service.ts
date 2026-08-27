@@ -99,13 +99,17 @@ export async function add(
       metadata: { memberId: target.id, role: input.role },
     });
 
-    // Phase 9 turns this into a real notification row and socket event.
+    // Phase 9 turned this into a real notification row and socket event. The
+    // only change activation required was `subject`: the message is rendered at
+    // write time, and without the project's own title it would read "added you
+    // to the project." with nothing after it.
     await notificationPort.emit({
       recipientId: target.id,
       actorId: actor.id,
       type: "project_invite",
       entityType: "project",
       entityId: context.row.id,
+      subject: context.row.title,
     });
 
     return toProjectMemberWithUser(member);

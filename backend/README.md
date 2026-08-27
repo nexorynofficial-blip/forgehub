@@ -3,15 +3,17 @@
 REST + realtime API for the ForgeHub platform. Serves the existing Next.js
 frontend at the repository root (`../src`), which is complete and unchanged.
 
-**Status: Backend Phase 8 (Messaging) complete.** Phases 1–8 have landed:
+**Status: Backend Phase 9 (Notifications) complete.** Phases 1–9 have landed:
 infrastructure, the full database schema, authentication, the users/profiles +
 follow-graph slice, the project aggregate, the social surface (posts, media,
 polls, comments, engagement, the feed), communities — membership, roles,
 ownership, rules, tags, events, pinned posts, and community posts — and
 messaging: direct conversations, real-time delivery, typing indicators, read
 receipts, unread counts, reactions, attachment references, presence, and search
-within a conversation. Notification delivery, search, and admin are later phases
-and are deliberately not implemented.
+within a conversation — and notifications: persisted in-app notifications with
+real-time delivery, driven by every trigger across Phases 4–8. Search,
+achievements, moderation, admin, and uploads are later phases and are
+deliberately not implemented.
 
 ## Stack
 
@@ -114,8 +116,9 @@ backend/
       posts/            Phase 6 — posts, comments, polls, engagement, feed
       communities/      Phase 7 — membership, roles, rules, tags, events, pins
       messages/         Phase 8 — conversations, messages, receipts, reactions
+      notifications/    Phase 9 — persistence, suppression, delivery, read state
     ports/
-      notification.port.ts        Seam for Phase 9; no-op for now
+      notification.port.ts        Live as of Phase 9; no-op retained
     repositories/
       audit.repository.ts         Shared, cross-cutting audit writes
     integrations/
@@ -125,6 +128,7 @@ backend/
       auth.socket.ts    Handshake authentication
       message.socket.ts Phase 8 — message/typing/read events and emits
       presence.socket.ts Phase 8 — Redis-backed online/offline tracking
+      notification.socket.ts Phase 9 — notification:new delivery
     types/
       express.d.ts      `req.user` augmentation
     utils/
@@ -157,6 +161,7 @@ backend/
     POSTS_AND_FEED.md           Post visibility, tombstones, feed filters, counters
     COMMUNITIES.md              Community visibility, roles, resources, the posts seam
     MESSAGING.md                Conversation access, whoCanMessage, presence, receipts
+    NOTIFICATIONS.md            Suppression rules, collapse policy, the port, fan-out
 ```
 
 Business logic lives in module services, database access in module

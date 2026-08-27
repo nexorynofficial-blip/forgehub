@@ -244,4 +244,96 @@ describe("OpenAPI document", () => {
       expect(documented, `undocumented socket event ${event}`).toContain(event);
     }
   });
+
+  /* ── Notifications (Phase 9) ───────────────────────────────────────────── */
+
+  it("declares the Phase 9 notification paths", () => {
+    const paths = openApiDocument.paths as Record<string, unknown>;
+
+    for (const path of [
+      "/notifications",
+      "/notifications/unread",
+      "/notifications/read-all",
+      "/notifications/{id}/read",
+    ]) {
+      expect(paths, `missing path ${path}`).toHaveProperty([path]);
+    }
+  });
+
+  it("declares the Phase 9 schemas", () => {
+    const components = openApiDocument.components as Record<string, unknown>;
+    const schemas = components["schemas"] as Record<string, unknown>;
+
+    for (const name of ["Notification", "NotificationActor"]) {
+      expect(schemas, `missing schema ${name}`).toHaveProperty([name]);
+    }
+  });
+
+  it("requires a bearer token on every notification operation", () => {
+    // Like messaging and unlike projects, posts, or communities, a
+    // notification list has no public face — so reads are checked here too,
+    // not only writes.
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const missing: string[] = [];
+
+    for (const [path, operations] of Object.entries(paths)) {
+      if (!path.startsWith("/notifications")) continue;
+
+      for (const [method, operation] of Object.entries(operations)) {
+        if (!["get", "post", "patch", "put", "delete"].includes(method)) continue;
+        const security = (operation as Record<string, Json>)["security"];
+        if (security === undefined) missing.push(`${method.toUpperCase()} ${path}`);
+      }
+    }
+
+    expect(
+      missing,
+      `unauthenticated notification operations: ${missing.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("documents a 404 rather than a 403 on every notification read", () => {
+    // A notification belonging to someone else and one that never existed must
+    // stay indistinguishable, or the endpoint becomes an id oracle.
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const offenders: string[] = [];
+
+    for (const [path, operations] of Object.entries(paths)) {
+      if (!path.startsWith("/notifications")) continue;
+
+      for (const [method, operation] of Object.entries(operations)) {
+        if (!["get", "post"].includes(method)) continue;
+        const responses = (operation as Record<string, Json>)["responses"] as Record<
+          string,
+          Json
+        >;
+        if ("403" in responses) offenders.push(`${method.toUpperCase()} ${path}`);
+      }
+    }
+
+    expect(
+      offenders,
+      `notification routes advertising 403: ${offenders.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("declares no way for a client to create or delete a notification", () => {
+    // Notifications are server-generated. A create endpoint would be a way to
+    // write arbitrary text into another user's panel.
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+
+    expect(Object.keys(paths["/notifications"] ?? {})).toEqual(["get"]);
+
+    for (const [path, operations] of Object.entries(paths)) {
+      if (!path.startsWith("/notifications")) continue;
+      expect(Object.keys(operations), `${path} declares a delete`).not.toContain(
+        "delete",
+      );
+    }
+  });
+
+  it("documents the notification:new socket event", () => {
+    const documented = new Set(SOCKET_EVENTS.map((entry) => entry.event));
+    expect(documented).toContain("notification:new");
+  });
 });

@@ -1,6 +1,7 @@
 import type { MessagePermission, UserRole } from "@prisma/client";
 
 import { isAdminRole } from "../../middleware/role.middleware.js";
+import { notificationPort } from "../../ports/notification.port.js";
 import { AppError } from "../../utils/errors.js";
 import { buildCursorPage, type CursorPage } from "../../utils/pagination.js";
 import * as follows from "../follows/follows.repository.js";
@@ -453,6 +454,29 @@ export async function sendMessage(
       ...(attachment.sizeBytes !== undefined ? { sizeBytes: attachment.sizeBytes } : {}),
     })),
   });
+
+  /*
+   * Phase 9: the `message` trigger.
+   *
+   * One notification per recipient, keyed on the *conversation* rather than
+   * the message. That, combined with the notifications module's collapse rule,
+   * is what stops a chat becoming a notification firehose: twenty messages in
+   * one thread produce one unread entry, and the next message only notifies
+   * again once the recipient has actually read the thread.
+   *
+   * Deliberately after persistence and outside any transaction — the port is
+   * fire-and-forget by contract, and a message that is already stored must not
+   * be rolled back because a notification could not be written.
+   */
+  for (const recipientId of context.otherParticipantIds) {
+    await notificationPort.emit({
+      recipientId,
+      actorId: actor.id,
+      type: "message",
+      entityType: "conversation",
+      entityId: conversationId,
+    });
+  }
 
   return {
     message: toMessageView(row, watermarksOf(context), actor.id),

@@ -3,6 +3,7 @@ import { Router } from "express";
 import { createAuthRouter } from "../modules/auth/auth.routes.js";
 import { createCommunityRouter } from "../modules/communities/communities.routes.js";
 import { createMessageRouter } from "../modules/messages/messages.routes.js";
+import { createNotificationRouter } from "../modules/notifications/notifications.routes.js";
 import {
   createCommentRouter,
   createFeedRouter,
@@ -58,6 +59,10 @@ export function createV1Router(): Router {
   // under it because a conversation is only ever addressed through this domain,
   // and every route requires authentication — there is no public correspondence.
   router.use("/messages", createMessageRouter());
+  // Notifications (Phase 9). TRD §5 names `GET /notifications`; every route
+  // requires authentication because a notification list is a digest of one
+  // person's received activity and has no public face.
+  router.use("/notifications", createNotificationRouter());
 
   return router;
 }

@@ -180,11 +180,20 @@ export async function getById(postId: string, viewer: Viewer): Promise<PostLooku
  *
  * Never throws: a mention that cannot be resolved, or a port that fails, must
  * not fail the write that produced it.
+ *
+ * **`entityType` is a parameter, corrected in Phase 9.** It was hardcoded to
+ * `"post"`, while `comments.service.ts` passes a *comment* id — so a mention
+ * inside a comment was recorded as pointing at a post that does not exist. The
+ * defect was invisible while the notification port was a no-op, because
+ * nothing persisted the mismatch; activating delivery turns it into a
+ * notification that deep-links nowhere. It defaults to `"post"` so the two
+ * post call sites read unchanged.
  */
 export async function announceMentions(
   content: string,
   actorId: string,
   entityId: string,
+  entityType: "post" | "comment" = "post",
 ): Promise<void> {
   const handles = parseMentions(content);
   if (handles.length === 0) return;
@@ -199,7 +208,7 @@ export async function announceMentions(
       recipientId: user.id,
       actorId,
       type: "mention",
-      entityType: "post",
+      entityType,
       entityId,
     });
   }

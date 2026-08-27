@@ -1,5 +1,6 @@
 import type { CommunityRole } from "@prisma/client";
 
+import { notificationPort } from "../../ports/notification.port.js";
 import { AuditAction, recordAuditEvent, type AuditContext } from "../../utils/audit.js";
 import { AppError } from "../../utils/errors.js";
 import { buildCursorPage, type CursorPage } from "../../utils/pagination.js";
@@ -226,6 +227,27 @@ export async function add(
     targetType: "community",
     targetId: context.row.id,
     metadata: { memberId: user.id, role: target },
+  });
+
+  /*
+   * Phase 9: the `community_invite` trigger.
+   *
+   * Being added to a community by someone else is the community analogue of
+   * `project_invite`, which Phase 5 already announced from the equivalent
+   * point in `projects/members.service.ts`. Joining under your own steam is
+   * deliberately *not* announced — you already know you joined, and `resolveJoin`
+   * is a different code path from this one.
+   *
+   * The port is fire-and-forget by contract, so a notification failure cannot
+   * roll back a membership that is already committed and audited.
+   */
+  await notificationPort.emit({
+    recipientId: user.id,
+    actorId: actor.id,
+    type: "community_invite",
+    entityType: "community",
+    entityId: context.row.id,
+    subject: context.row.name,
   });
 
   return single(context, user.id);

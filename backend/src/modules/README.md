@@ -49,7 +49,7 @@ BACKEND_ARCHITECTURE.md §38:
 | `comments`      | 6     | **done** — folded into `posts`                     |
 | `communities`   | 7     | **done** — roles, rules, tags, events, pins        |
 | `messages`      | 8     | **done** — conversations, receipts, reactions      |
-| `notifications` | 9     |                                                    |
+| `notifications` | 9     | **done** — suppression, delivery, read state       |
 | `search`        | 10    |                                                    |
 | `achievements`  | 10    |                                                    |
 | `moderation`    | 11    |                                                    |
@@ -112,6 +112,21 @@ Two divergences worth knowing:
   own: there is no socket-only path into the data, so there is no second place
   for an authorization check to be missing. See `docs/MESSAGING.md`.
 
+## `notifications/`
+
+The Phase 9 aggregate, and the only one that is written to almost entirely by
+_other_ modules. Same shape as its predecessors — pure rules
+(`notification.access.ts`), a repository that owns every Prisma call, one
+projection layer — with two things worth knowing:
+
+- **Nothing imports it directly except the port.** `TRD` §22 requires the
+  notification service to stay independent of the services that trigger it, so
+  domain code depends on `ports/notification.port.ts` and never on this
+  module. The one exception is `projects/updates.service.ts`, which calls the
+  fan-out helper because the port is single-recipient by design.
+- **There is no create endpoint.** Notifications are produced by domain events;
+  the REST surface is read and mark-read only. See `docs/NOTIFICATIONS.md`.
+
 ## Cross-module dependencies
 
 Modules may depend on those above them, never below:
@@ -135,12 +150,21 @@ messages ──►  users       (senders and participants reuse `toUserSummary`;
                            `whoCanMessage` is read through the users repository)
 messages ──►  follows     (blocking outranks membership; the `followers` contact
                            policy consults the follow graph)
+notifications ► users     (actors are projected to a four-field summary)
+notifications ► follows   (blocking suppresses a notification in either
+                           direction)
+(everything) ► ports/notification.port.ts
+                          (follows, posts, projects, communities, and messages
+                           raise events through the port — never by importing
+                           the notifications module)
 ```
 
 `projects` and `posts` each depend on `users` and `follows`; neither depends on
 the other. `communities` depends on all three. `messages` depends only on
 `users` and `follows` — it has no relationship to projects, posts, or
-communities, and nothing depends on `messages`.
+communities, and nothing depends on `messages`. `notifications` likewise
+depends only on `users` and `follows`; every other module reaches it through
+the port, which is what keeps the arrow pointing one way.
 
 ### The posts ↔ communities seam (Phase 7)
 

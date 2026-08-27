@@ -1,4 +1,7 @@
+import * as notifications from "../notifications/notifications.service.js";
+import { emitNotificationsNew } from "../../sockets/notification.socket.js";
 import { AppError } from "../../utils/errors.js";
+import { logger } from "../../utils/logger.js";
 import { buildCursorPage } from "../../utils/pagination.js";
 import { canModifyUpdate } from "./project.access.js";
 import { toProjectUpdateWithAuthor } from "./project.view.js";
@@ -57,12 +60,61 @@ export async function create(
   // The author is the verified actor, never a body field.
   const row = await repo.createUpdate(context.row.id, actor.id, input.content);
 
-  // No notification is emitted here. `project_update` is a fan-out to every
-  // project follower, and the notification port is single-recipient by design
-  // — looping over followers in this service would put delivery fan-out in the
-  // domain layer. Phase 9 owns it. See `ports/notification.port.ts`.
+  /*
+   * Phase 9: the `project_update` fan-out.
+   *
+   * Phase 5 deliberately emitted nothing here, on the grounds that the
+   * notification port is single-recipient and looping over followers inside
+   * this service would put delivery fan-out in the domain layer. That reasoning
+   * still holds, which is why this calls a *notifications* helper rather than
+   * looping: the domain says "this happened, to these followers", and the
+   * notifications module owns batching, suppression, and delivery.
+   *
+   * Bounded and best-effort. The fan-out runs inline — no queue library is
+   * installed and this phase adds none — so it is capped at
+   * `FANOUT_MAX_RECIPIENTS` and written in batched `createManyAndReturn`
+   * statements.
+   * The whole block is wrapped because an update that is already committed
+   * must not be rolled back by a notification failure, which is the same
+   * fire-and-forget contract the port itself carries.
+   */
+  await announceUpdate(context.row.id, context.row.title, actor.id);
 
   return toProjectUpdateWithAuthor(row);
+}
+
+/**
+ * Notifies a project's followers that an update was posted.
+ *
+ * Never throws. Emits the same `notification:new` payload as every other
+ * notification type: the batch write returns its own rows, so the fan-out
+ * costs no extra round trip to obtain them and a client never has to tell a
+ * fanned-out notification apart from a singly-created one.
+ */
+async function announceUpdate(
+  projectId: string,
+  projectName: string,
+  actorId: string,
+): Promise<void> {
+  try {
+    const followers = await notifications.findProjectFollowers(projectId);
+    if (followers.length === 0) return;
+
+    const delivered = await notifications.fanOutNotification(followers, {
+      actorId,
+      type: "project_update",
+      entityType: "project",
+      entityId: projectId,
+      subject: projectName,
+    });
+
+    emitNotificationsNew(delivered);
+  } catch (error) {
+    logger.error(
+      { err: error, projectId, actorId },
+      "Project update fan-out failed — the update itself is unaffected",
+    );
+  }
 }
 
 /**

@@ -132,7 +132,9 @@ export async function create(
     });
   }
 
-  await announceMentions(input.content, actor.id, row.id);
+  // A mention inside a comment targets the *comment*, not its post (Phase 9
+  // correction — the entityType was previously hardcoded to "post").
+  await announceMentions(input.content, actor.id, row.id, "comment");
 
   return toCommentView(row);
 }
@@ -169,7 +171,7 @@ export async function update(
   }
 
   const row = await repo.updateComment(commentId, input.content);
-  await announceMentions(input.content, actor.id, commentId);
+  await announceMentions(input.content, actor.id, commentId, "comment");
 
   return toCommentView(row);
 }
