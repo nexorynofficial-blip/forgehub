@@ -4,14 +4,16 @@ import { Server as SocketIOServer, type Socket } from "socket.io";
 import { env } from "../config/env.js";
 import { logger } from "../utils/logger.js";
 import { authenticateSocket, userRoom, type AuthenticatedSocket } from "./auth.socket.js";
+import { registerMessageHandlers } from "./message.socket.js";
+import { registerPresenceHandlers, stopPresenceTracking } from "./presence.socket.js";
 
 /**
  * Socket.IO foundation (TRD.md §6).
  *
  * Every connection is authenticated at the handshake (TRD §20) before any
- * handler runs. Chat, typing indicators, presence, notifications, and read
- * receipts are later phases and belong in their own handler modules
- * registered through `registerSocketHandlers`.
+ * handler runs. Chat, typing indicators, presence, and read receipts arrived in
+ * Phase 8 and live in their own handler modules, registered below; notification
+ * delivery is Phase 9 and will join them there.
  */
 
 let io: SocketIOServer | null = null;
@@ -23,12 +25,23 @@ let io: SocketIOServer | null = null;
  * The room name is derived from the *verified* user id — never from anything
  * the client sent — which is what stops a socket subscribing to someone
  * else's events.
+ *
+ * The user-room join happens first and unconditionally, before any feature
+ * module is wired: everything Phase 8 emits is addressed to user rooms, so a
+ * socket that somehow skipped this line would connect successfully and then
+ * silently receive nothing.
  */
 function registerSocketHandlers(socket: Socket): void {
-  const { user } = (socket as AuthenticatedSocket).data;
+  const authenticated = socket as AuthenticatedSocket;
+  const { user } = authenticated.data;
 
   void socket.join(userRoom(user.id));
   logger.debug({ socketId: socket.id, userId: user.id }, "Socket connected");
+
+  // Phase 8. Both take the already-authenticated socket; neither reads
+  // identity from a payload.
+  registerMessageHandlers(authenticated);
+  registerPresenceHandlers(authenticated);
 
   socket.on("disconnect", (reason) => {
     logger.debug({ socketId: socket.id, userId: user.id, reason }, "Socket disconnected");
@@ -71,8 +84,25 @@ export function getSocketServer(): SocketIOServer {
   return io;
 }
 
+/**
+ * Non-throwing accessor, for emitters that are genuinely optional (Phase 8).
+ *
+ * `getSocketServer` throws so a *wiring* mistake surfaces immediately, and
+ * that is right for code which cannot work without a socket server. Real-time
+ * delivery is not such a case: a message sent over REST must persist and
+ * succeed whether or not anyone is listening — the offline-recipient rule
+ * depends on it, and the REST integration suites run with no socket server at
+ * all. Those call sites ask, and skip the emit when the answer is null.
+ */
+export function tryGetSocketServer(): SocketIOServer | null {
+  return io;
+}
+
 export async function closeSocketServer(): Promise<void> {
   if (!io) return;
+  // Before the sockets are cut: stops the presence heartbeat interval, which
+  // would otherwise outlive the server and keep a test process alive.
+  stopPresenceTracking();
   // Kick connected clients first so they get a clean disconnect event and can
   // reconnect to another instance, rather than hanging until ping timeout.
   io.disconnectSockets(true);

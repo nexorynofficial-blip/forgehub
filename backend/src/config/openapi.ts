@@ -2485,6 +2485,297 @@ const communityPaths: OpenApiObject = {
   },
 };
 
+/* ── Messaging paths (Phase 8) ──────────────────────────────────────────── */
+
+const MESSAGES_TAG = "Messaging";
+const MESSAGE_REACTIONS_TAG = "Message Reactions";
+const MESSAGE_READ_TAG = "Read Receipts";
+
+const conversationIdParam = {
+  name: "conversationId",
+  in: "path",
+  required: true,
+  schema: { type: "string", format: "uuid" },
+};
+
+const messageIdParam = {
+  name: "messageId",
+  in: "path",
+  required: true,
+  schema: { type: "string", format: "uuid" },
+};
+
+const conversationEnvelope = envelopeOf({
+  type: "object",
+  properties: { conversation: { $ref: "#/components/schemas/Conversation" } },
+});
+
+const messageEnvelope = envelopeOf({
+  type: "object",
+  properties: { message: { $ref: "#/components/schemas/Message" } },
+});
+
+const conversationPageEnvelope = envelopeOf({
+  type: "object",
+  properties: {
+    items: { type: "array", items: { $ref: "#/components/schemas/Conversation" } },
+    nextCursor: { type: ["string", "null"], format: "uuid" },
+  },
+});
+
+const messagePageEnvelope = envelopeOf({
+  type: "object",
+  properties: {
+    items: { type: "array", items: { $ref: "#/components/schemas/Message" } },
+    nextCursor: { type: ["string", "null"], format: "uuid" },
+  },
+});
+
+/**
+ * Note what no messaging read advertises: **403**.
+ *
+ * A conversation the caller does not belong to answers 404, and so does one
+ * hidden by a block — the same non-disclosure rule the community reads follow.
+ * 403 appears only on two writes where the caller demonstrably already knows
+ * the resource exists: editing someone else's message, and sending to someone
+ * whose contact policy has since tightened.
+ */
+const messagePaths: OpenApiObject = {
+  "/messages/conversations": {
+    get: {
+      tags: [MESSAGES_TAG],
+      summary: "The caller's conversations",
+      description:
+        "Newest activity first. Each entry carries its last live message and the " +
+        "caller's own unread count; a conversation with no messages sorts last.",
+      security: [{ bearerAuth: [] }],
+      parameters: cursorParams,
+      responses: {
+        "200": jsonResponse("Conversations", conversationPageEnvelope),
+        ...errorResponses("401", "422"),
+      },
+    },
+    post: {
+      tags: [MESSAGES_TAG],
+      summary: "Open a direct conversation",
+      description:
+        "Idempotent: 201 when a conversation was created, 200 when an existing one " +
+        "was returned. The caller is always one participant and the body names only " +
+        "the other. Blocking, an unknown user, and a `followers`-only recipient the " +
+        "caller does not follow are all 404 — indistinguishable on purpose, so the " +
+        "endpoint cannot be used to probe either setting.",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({
+        $ref: "#/components/schemas/CreateConversationRequest",
+      }),
+      responses: {
+        "200": jsonResponse("Existing conversation", conversationEnvelope),
+        "201": jsonResponse("Conversation created", conversationEnvelope),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/messages/conversations/{conversationId}": {
+    get: {
+      tags: [MESSAGES_TAG],
+      summary: "One conversation",
+      security: [{ bearerAuth: [] }],
+      parameters: [conversationIdParam],
+      responses: {
+        "200": jsonResponse("The conversation", conversationEnvelope),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/messages/conversations/{conversationId}/messages": {
+    get: {
+      tags: [MESSAGES_TAG],
+      summary: "Message history",
+      description:
+        "Cursor-paginated, newest first, riding the " +
+        "`(conversationId, createdAt DESC)` index. Deleted messages are omitted.",
+      security: [{ bearerAuth: [] }],
+      parameters: [conversationIdParam, ...cursorParams],
+      responses: {
+        "200": jsonResponse("Messages", messagePageEnvelope),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+    post: {
+      tags: [MESSAGES_TAG],
+      summary: "Send a message",
+      description:
+        "The sender is the token holder; a `senderId` in the body is stripped. A " +
+        "message must carry content or at least one attachment. 403 when the " +
+        "recipient's `whoCanMessage` has since tightened to `followers` and the " +
+        "sender does not follow them — history stays readable, only the write closes.",
+      security: [{ bearerAuth: [] }],
+      parameters: [conversationIdParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/SendMessageRequest" }),
+      responses: {
+        "201": jsonResponse("Message sent", messageEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/messages/conversations/{conversationId}/messages/search": {
+    get: {
+      tags: [MESSAGES_TAG],
+      summary: "Search within a conversation",
+      description:
+        "Case-insensitive substring match, scoped to this conversation by the path. " +
+        "There is no cross-conversation variant; global search is a later phase.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        conversationIdParam,
+        {
+          name: "q",
+          in: "query",
+          required: true,
+          schema: { type: "string", minLength: 1, maxLength: 100 },
+        },
+        ...cursorParams,
+      ],
+      responses: {
+        "200": jsonResponse("Matching messages", messagePageEnvelope),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/messages/conversations/{conversationId}/read": {
+    post: {
+      tags: [MESSAGE_READ_TAG],
+      summary: "Mark a conversation read",
+      description:
+        "Moves only the caller's own watermark, and only forward — a late request " +
+        "from a second device cannot drag it backwards. Omitting `messageId` marks " +
+        "everything currently in the thread.",
+      security: [{ bearerAuth: [] }],
+      parameters: [conversationIdParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/MarkReadRequest" }, false),
+      responses: {
+        "200": jsonResponse(
+          "Read receipt",
+          envelopeOf({ $ref: "#/components/schemas/ReadReceipt" }),
+        ),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/messages/conversations/{conversationId}/unread": {
+    get: {
+      tags: [MESSAGE_READ_TAG],
+      summary: "Unread count",
+      description:
+        "One indexed COUNT against the caller's watermark. Never loads messages.",
+      security: [{ bearerAuth: [] }],
+      parameters: [conversationIdParam],
+      responses: {
+        "200": jsonResponse(
+          "Unread count",
+          envelopeOf({
+            type: "object",
+            required: ["conversationId", "unreadCount"],
+            properties: {
+              conversationId: { type: "string", format: "uuid" },
+              unreadCount: { type: "integer", minimum: 0 },
+            },
+          }),
+        ),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/messages/{messageId}": {
+    patch: {
+      tags: [MESSAGES_TAG],
+      summary: "Edit a message",
+      description:
+        "The author only — no admin or moderator branch. Attachments cannot be " +
+        "changed by an edit: re-pointing one after the fact would let a sender swap " +
+        "a file the recipient has already trusted. 403 for another member of the " +
+        "same conversation (the message is not a secret from them), 404 for anyone " +
+        "outside it.",
+      security: [{ bearerAuth: [] }],
+      parameters: [messageIdParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/EditMessageRequest" }),
+      responses: {
+        "200": jsonResponse("Message updated", messageEnvelope),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+    delete: {
+      tags: [MESSAGES_TAG],
+      summary: "Delete a message",
+      description:
+        "Soft delete — the row, its attachments, and its reactions all survive; the " +
+        "message stops being returned by any read path. The author only.",
+      security: [{ bearerAuth: [] }],
+      parameters: [messageIdParam],
+      responses: {
+        "200": jsonResponse(
+          "Message deleted",
+          envelopeOf({
+            type: "object",
+            properties: {
+              id: { type: "string", format: "uuid" },
+              conversationId: { type: "string", format: "uuid" },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "422"),
+      },
+    },
+  },
+
+  "/messages/{messageId}/reactions": {
+    post: {
+      tags: [MESSAGE_REACTIONS_TAG],
+      summary: "Add a reaction",
+      description:
+        "Idempotent — `@@unique([messageId, userId, emoji])` is the arbiter, so a " +
+        "double tap is 201 with an unchanged count rather than a 409 the UI would " +
+        "have to explain.",
+      security: [{ bearerAuth: [] }],
+      parameters: [messageIdParam],
+      requestBody: requestBody({ $ref: "#/components/schemas/AddReactionRequest" }),
+      responses: {
+        "201": jsonResponse("Reaction added", messageEnvelope),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+
+  "/messages/{messageId}/reactions/{emoji}": {
+    delete: {
+      tags: [MESSAGE_REACTIONS_TAG],
+      summary: "Remove a reaction",
+      description: "Removes only the caller's own reaction, never anyone else's.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        messageIdParam,
+        {
+          name: "emoji",
+          in: "path",
+          required: true,
+          description: "Percent-encoded.",
+          schema: { type: "string", minLength: 1, maxLength: 32 },
+        },
+      ],
+      responses: {
+        "200": jsonResponse("Reaction removed", messageEnvelope),
+        ...errorResponses("401", "404", "422"),
+      },
+    },
+  },
+};
+
 export const openApiDocument: OpenApiDocument = {
   openapi: "3.1.0",
   info: {
@@ -2509,6 +2800,9 @@ export const openApiDocument: OpenApiDocument = {
     { name: POSTS_TAG, description: "Posts, media, polls, likes, and bookmarks" },
     { name: COMMENTS_TAG, description: "Comments, replies, and comment likes" },
     { name: FEED_TAG, description: "The social feed and its filters" },
+    { name: MESSAGES_TAG, description: "Direct conversations and messages" },
+    { name: MESSAGE_REACTIONS_TAG, description: "Emoji reactions on messages" },
+    { name: MESSAGE_READ_TAG, description: "Read watermarks and unread counts" },
   ],
   components: {
     securitySchemes: {
@@ -2812,6 +3106,200 @@ export const openApiDocument: OpenApiDocument = {
         type: "object",
         required: ["postId"],
         properties: { postId: { type: "string", format: "uuid" } },
+      },
+
+      /* ── Messaging (Phase 8) ─────────────────────────────────────────── */
+
+      MessageAttachment: {
+        type: "object",
+        required: ["id", "url", "type", "name", "sizeBytes"],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          url: stringField({
+            description:
+              "An opaque reference, not necessarily an absolute URL. Phase 8 " +
+              "never fetches or stores bytes; uploads are a later phase.",
+          }),
+          type: { type: "string", enum: ["image", "file", "voice"] },
+          name: stringField(),
+          sizeBytes: {
+            type: ["integer", "null"],
+            description: "Client-reported. Null when not supplied.",
+          },
+        },
+      },
+
+      MessageReaction: {
+        type: "object",
+        required: ["emoji", "count", "userIds", "reactedByViewer"],
+        properties: {
+          emoji: stringField(),
+          count: { type: "integer", minimum: 1 },
+          userIds: { type: "array", items: { type: "string", format: "uuid" } },
+          reactedByViewer: { type: "boolean" },
+        },
+      },
+
+      Message: {
+        type: "object",
+        required: [
+          "id",
+          "conversationId",
+          "senderId",
+          "content",
+          "attachments",
+          "reactions",
+          "seenByUserIds",
+          "createdAt",
+          "editedAt",
+          "sender",
+        ],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          conversationId: { type: "string", format: "uuid" },
+          senderId: { type: "string", format: "uuid" },
+          content: stringField(),
+          attachments: {
+            type: "array",
+            items: { $ref: "#/components/schemas/MessageAttachment" },
+          },
+          reactions: {
+            type: "array",
+            items: { $ref: "#/components/schemas/MessageReaction" },
+          },
+          seenByUserIds: {
+            type: "array",
+            items: { type: "string", format: "uuid" },
+            description:
+              "Derived from each member's read watermark, not from a per-message " +
+              "receipt table. The sender is always included.",
+          },
+          createdAt: stringField({ format: "date-time" }),
+          editedAt: { type: ["string", "null"], format: "date-time" },
+          sender: { $ref: "#/components/schemas/UserSummary" },
+        },
+      },
+
+      Conversation: {
+        type: "object",
+        required: [
+          "id",
+          "participantIds",
+          "isGroup",
+          "title",
+          "lastMessage",
+          "unreadCount",
+          "createdAt",
+          "lastMessageAt",
+          "participants",
+        ],
+        properties: {
+          id: { type: "string", format: "uuid" },
+          participantIds: {
+            type: "array",
+            items: { type: "string", format: "uuid" },
+            description: "Every live participant, the viewer included.",
+          },
+          isGroup: {
+            type: "boolean",
+            description:
+              "Always false in Phase 8. The field exists because the schema and " +
+              "the service abstractions are group-ready; group creation is not " +
+              "implemented.",
+          },
+          title: { type: ["string", "null"] },
+          lastMessage: {
+            oneOf: [{ $ref: "#/components/schemas/Message" }, { type: "null" }],
+            description:
+              "The newest message that is not deleted, which may not be the one " +
+              "`lastMessageAt` refers to.",
+          },
+          unreadCount: { type: "integer", minimum: 0 },
+          createdAt: stringField({ format: "date-time" }),
+          lastMessageAt: { type: ["string", "null"], format: "date-time" },
+          participants: {
+            type: "array",
+            items: { $ref: "#/components/schemas/UserSummary" },
+            description: "Every participant *except* the viewer.",
+          },
+        },
+      },
+
+      ReadReceipt: {
+        type: "object",
+        required: ["conversationId", "lastReadAt", "lastReadMessageId", "unreadCount"],
+        properties: {
+          conversationId: { type: "string", format: "uuid" },
+          lastReadAt: { type: ["string", "null"], format: "date-time" },
+          lastReadMessageId: { type: ["string", "null"], format: "uuid" },
+          unreadCount: { type: "integer", minimum: 0 },
+        },
+      },
+
+      CreateConversationRequest: {
+        type: "object",
+        required: ["username"],
+        properties: {
+          username: stringField({
+            maxLength: 30,
+            description:
+              "The *other* participant. The caller is always the first, so there " +
+              "is deliberately no participant array.",
+          }),
+        },
+      },
+
+      SendMessageRequest: {
+        type: "object",
+        properties: {
+          content: stringField({ maxLength: 4000 }),
+          attachments: {
+            type: "array",
+            maxItems: 10,
+            items: {
+              type: "object",
+              required: ["url", "name"],
+              properties: {
+                url: stringField({ maxLength: 500 }),
+                name: stringField({ maxLength: 200 }),
+                type: {
+                  type: "string",
+                  enum: ["image", "file", "voice"],
+                  default: "file",
+                },
+                sizeBytes: { type: "integer", minimum: 0 },
+              },
+            },
+          },
+        },
+        description:
+          "At least one of `content` or `attachments` must be non-empty. There is " +
+          "no `senderId`: the sender is the token holder.",
+      },
+
+      EditMessageRequest: {
+        type: "object",
+        required: ["content"],
+        properties: { content: stringField({ minLength: 1, maxLength: 4000 }) },
+      },
+
+      MarkReadRequest: {
+        type: "object",
+        properties: {
+          messageId: {
+            type: "string",
+            format: "uuid",
+            description:
+              "Optional. Omit to mark the whole thread. Must belong to this " +
+              "conversation; an id from another thread is 404.",
+          },
+        },
+      },
+
+      AddReactionRequest: {
+        type: "object",
+        required: ["emoji"],
+        properties: { emoji: stringField({ minLength: 1, maxLength: 32 }) },
       },
 
       SuccessEnvelope: {
@@ -3752,6 +4240,7 @@ export const openApiDocument: OpenApiDocument = {
     ...projectPaths,
     ...postPaths,
     ...communityPaths,
+    ...messagePaths,
   },
 };
 
@@ -3772,8 +4261,13 @@ export const SYSTEM_ENDPOINTS = [
 /**
  * Socket.IO is not expressible in OpenAPI paths, so the realtime contract is
  * documented alongside it (TRD §31 asks for WebSocket events "where
- * practical"). Handshake auth lands in Phase 3; the message/presence events
- * arrive with their own phases.
+ * practical"). Handshake auth landed in Phase 3; messaging, typing, read
+ * receipts, and presence in Phase 8. Notification delivery is Phase 9.
+ *
+ * Every `client → server` event takes an acknowledgement callback answering
+ * `{ ok: true, data }` or `{ ok: false, error: { code, message } }`, using the
+ * same error codes as the REST envelope — a socket frame has no status line,
+ * so failures need a channel of their own.
  */
 export const SOCKET_EVENTS = [
   {
@@ -3787,5 +4281,83 @@ export const SOCKET_EVENTS = [
     event: "disconnect",
     direction: "server → client",
     description: "Standard Socket.IO lifecycle event.",
+  },
+  {
+    event: "conversation:join",
+    direction: "client → server",
+    description:
+      "`{ conversationId }`. Authorized against the database — a socket cannot " +
+      "place itself in a room for a conversation it does not belong to. Scopes " +
+      "typing indicators; 404 semantics on refusal.",
+  },
+  {
+    event: "conversation:leave",
+    direction: "client → server",
+    description: "`{ conversationId }`. No authorization needed to stop listening.",
+  },
+  {
+    event: "message:send",
+    direction: "client → server",
+    description:
+      "`{ conversationId, content?, attachments? }`. Membership, blocking, and the " +
+      "recipient's `whoCanMessage` are re-checked from the database on every frame. " +
+      "Nothing is emitted until the row is persisted.",
+  },
+  {
+    event: "message:new",
+    direction: "server → client",
+    description:
+      "`{ message }`. Emitted to each participant's `user:{id}` room — resolved " +
+      "from conversation membership, never from the sender's payload — including " +
+      "the sender's own other devices. Not emitted to the conversation room, so a " +
+      "client with the thread open receives exactly one copy.",
+  },
+  {
+    event: "message:read",
+    direction: "both",
+    description:
+      "Client sends `{ conversationId, messageId? }`; server relays " +
+      "`{ conversationId, userId, lastReadAt, lastReadMessageId }`. Moves only the " +
+      "authenticated user's watermark, and only forward.",
+  },
+  {
+    event: "message:deleted",
+    direction: "server → client",
+    description: "`{ id, conversationId }`. The row survives; read paths skip it.",
+  },
+  {
+    event: "message:typing",
+    direction: "both",
+    description:
+      "`{ conversationId }` in, `{ conversationId, userId, username }` out, to the " +
+      "conversation room excluding the sender. Ephemeral — never persisted. The " +
+      "relayed `userId` comes from the handshake, so it cannot be spoofed.",
+  },
+  {
+    event: "message:stop_typing",
+    direction: "both",
+    description: "As `message:typing`.",
+  },
+  {
+    event: "user:online",
+    direction: "server → client",
+    description:
+      "`{ userId, online, at }`, sent to the user's conversation partners only — " +
+      "not broadcast. Fires on the first socket for that user, not on every tab.",
+  },
+  {
+    event: "user:offline",
+    direction: "server → client",
+    description:
+      "As `user:online`. Fires only when the user's last socket disconnects, so " +
+      "closing one tab while another is open emits nothing.",
+  },
+  {
+    event: "presence:update",
+    direction: "server → client",
+    description:
+      "`{ userId, online, at }`. Carries the same transition as the two events " +
+      "above; both spellings are emitted because ARCHITECTURE §14 and TRD §19 each " +
+      "name a different one.",
   },
 ] as const;

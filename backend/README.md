@@ -3,13 +3,15 @@
 REST + realtime API for the ForgeHub platform. Serves the existing Next.js
 frontend at the repository root (`../src`), which is complete and unchanged.
 
-**Status: Backend Phase 7 (Communities) complete.** Phases 1–7 have landed:
+**Status: Backend Phase 8 (Messaging) complete.** Phases 1–8 have landed:
 infrastructure, the full database schema, authentication, the users/profiles +
 follow-graph slice, the project aggregate, the social surface (posts, media,
-polls, comments, engagement, the feed), and communities — membership, roles,
-ownership, rules, tags, events, pinned posts, and community posts. Messaging,
-notification delivery, search, and admin are later phases and are deliberately
-not implemented.
+polls, comments, engagement, the feed), communities — membership, roles,
+ownership, rules, tags, events, pinned posts, and community posts — and
+messaging: direct conversations, real-time delivery, typing indicators, read
+receipts, unread counts, reactions, attachment references, presence, and search
+within a conversation. Notification delivery, search, and admin are later phases
+and are deliberately not implemented.
 
 ## Stack
 
@@ -110,6 +112,8 @@ backend/
       follows/          Phase 4 — follow graph and blocking
       projects/         Phase 5 — projects, members, milestones, updates, engagement
       posts/            Phase 6 — posts, comments, polls, engagement, feed
+      communities/      Phase 7 — membership, roles, rules, tags, events, pins
+      messages/         Phase 8 — conversations, messages, receipts, reactions
     ports/
       notification.port.ts        Seam for Phase 9; no-op for now
     repositories/
@@ -119,6 +123,8 @@ backend/
     sockets/
       socket.ts         Socket.IO server
       auth.socket.ts    Handshake authentication
+      message.socket.ts Phase 8 — message/typing/read events and emits
+      presence.socket.ts Phase 8 — Redis-backed online/offline tracking
     types/
       express.d.ts      `req.user` augmentation
     utils/
@@ -149,6 +155,8 @@ backend/
     USERS_AND_SOCIAL_GRAPH.md   Privacy, projection, blocking, counters
     PROJECTS.md                 Visibility, permissions, derived progress, counters
     POSTS_AND_FEED.md           Post visibility, tombstones, feed filters, counters
+    COMMUNITIES.md              Community visibility, roles, resources, the posts seam
+    MESSAGING.md                Conversation access, whoCanMessage, presence, receipts
 ```
 
 Business logic lives in module services, database access in module

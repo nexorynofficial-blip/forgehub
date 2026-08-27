@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { createAuthRouter } from "../modules/auth/auth.routes.js";
 import { createCommunityRouter } from "../modules/communities/communities.routes.js";
+import { createMessageRouter } from "../modules/messages/messages.routes.js";
 import {
   createCommentRouter,
   createFeedRouter,
@@ -53,6 +54,10 @@ export function createV1Router(): Router {
   // Communities (Phase 7). TRD §5 names `/communities`; membership lives under
   // it because a membership is only ever addressed through its community.
   router.use("/communities", createCommunityRouter());
+  // Messaging (Phase 8). ARCHITECTURE §11 names `/messages`; conversations live
+  // under it because a conversation is only ever addressed through this domain,
+  // and every route requires authentication — there is no public correspondence.
+  router.use("/messages", createMessageRouter());
 
   return router;
 }

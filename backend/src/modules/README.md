@@ -47,8 +47,8 @@ BACKEND_ARCHITECTURE.md §38:
 | `projects`      | 5     | **done** — members, roadmap, changelog, engagement |
 | `posts`         | 6     | **done** — absorbs polls, engagement, and the feed |
 | `comments`      | 6     | **done** — folded into `posts`                     |
-| `communities`   | 7     |                                                    |
-| `messages`      | 8     |                                                    |
+| `communities`   | 7     | **done** — roles, rules, tags, events, pins        |
+| `messages`      | 8     | **done** — conversations, receipts, reactions      |
 | `notifications` | 9     |                                                    |
 | `search`        | 10    |                                                    |
 | `achievements`  | 10    |                                                    |
@@ -94,6 +94,24 @@ viewer's own membership is therefore queried separately by the gate — inferrin
 it from that filtered array would deny every ordinary member access to their own
 private community. See `docs/COMMUNITIES.md`.
 
+## `messages/`
+
+The Phase 8 aggregate, and the first one whose surface is split across two
+transports. Same shape as `communities/` — one gate
+(`loadAccessibleConversation`), a pure rule module (`message.access.ts`), a
+repository that owns every Prisma call, one projection layer.
+
+Two divergences worth knowing:
+
+- **The Zod schemas are shared with the socket layer.** A socket frame is
+  exactly as untrusted as an HTTP body and skips the middleware stack entirely,
+  so `messages.schema.ts` validates both. A bound tightened for REST cannot be
+  left loose on the socket path.
+- **`src/sockets/message.socket.ts` and `presence.socket.ts` live outside this
+  directory** but call straight into this service. They hold no rules of their
+  own: there is no socket-only path into the data, so there is no second place
+  for an authorization check to be missing. See `docs/MESSAGING.md`.
+
 ## Cross-module dependencies
 
 Modules may depend on those above them, never below:
@@ -113,10 +131,16 @@ communities ► users      (owners/members reuse `toUserSummary`)
 communities ► follows    (a blocked viewer cannot see the blocker's community)
 communities ► posts      (community posts reuse the Phase 6 create, projection,
                            counters, and validation wholesale)
+messages ──►  users       (senders and participants reuse `toUserSummary`;
+                           `whoCanMessage` is read through the users repository)
+messages ──►  follows     (blocking outranks membership; the `followers` contact
+                           policy consults the follow graph)
 ```
 
 `projects` and `posts` each depend on `users` and `follows`; neither depends on
-the other. `communities` depends on all three.
+the other. `communities` depends on all three. `messages` depends only on
+`users` and `follows` — it has no relationship to projects, posts, or
+communities, and nothing depends on `messages`.
 
 ### The posts ↔ communities seam (Phase 7)
 

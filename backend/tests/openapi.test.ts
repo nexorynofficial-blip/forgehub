@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { openApiDocument } from "../src/config/openapi.js";
+import { SOCKET_EVENTS, openApiDocument } from "../src/config/openapi.js";
 
 /**
  * Contract checks on the OpenAPI document.
@@ -140,5 +140,108 @@ describe("OpenAPI document", () => {
     }
 
     expect(offenders, `reads advertising 403: ${offenders.join(", ")}`).toEqual([]);
+  });
+
+  /* ── Messaging (Phase 8) ───────────────────────────────────────────────── */
+
+  it("declares the Phase 8 messaging paths", () => {
+    const paths = openApiDocument.paths as Record<string, unknown>;
+
+    for (const path of [
+      "/messages/conversations",
+      "/messages/conversations/{conversationId}",
+      "/messages/conversations/{conversationId}/messages",
+      "/messages/conversations/{conversationId}/messages/search",
+      "/messages/conversations/{conversationId}/read",
+      "/messages/conversations/{conversationId}/unread",
+      "/messages/{messageId}",
+      "/messages/{messageId}/reactions",
+      "/messages/{messageId}/reactions/{emoji}",
+    ]) {
+      expect(paths, `missing path ${path}`).toHaveProperty([path]);
+    }
+  });
+
+  it("declares the Phase 8 schemas", () => {
+    const components = openApiDocument.components as Record<string, unknown>;
+    const schemas = components["schemas"] as Record<string, unknown>;
+
+    for (const name of [
+      "Conversation",
+      "Message",
+      "MessageAttachment",
+      "MessageReaction",
+      "ReadReceipt",
+      "CreateConversationRequest",
+      "SendMessageRequest",
+      "EditMessageRequest",
+      "MarkReadRequest",
+      "AddReactionRequest",
+    ]) {
+      expect(schemas, `missing schema ${name}`).toHaveProperty([name]);
+    }
+  });
+
+  it("requires a bearer token on every messaging operation", () => {
+    // Unlike projects, posts, and communities, messaging has no public face:
+    // there is no anonymous reader of private correspondence, so *reads* are
+    // checked here too rather than only writes.
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const missing: string[] = [];
+
+    for (const [path, operations] of Object.entries(paths)) {
+      if (!path.startsWith("/messages")) continue;
+
+      for (const [method, operation] of Object.entries(operations)) {
+        if (!["get", "post", "patch", "put", "delete"].includes(method)) continue;
+        const security = (operation as Record<string, Json>)["security"];
+        if (security === undefined) missing.push(`${method.toUpperCase()} ${path}`);
+      }
+    }
+
+    expect(
+      missing,
+      `unauthenticated messaging operations: ${missing.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("documents a 404 rather than a 403 on every messaging read", () => {
+    // A conversation the caller does not belong to is indistinguishable from
+    // one that does not exist, and so is one hidden by a block.
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const offenders: string[] = [];
+
+    for (const [path, operations] of Object.entries(paths)) {
+      if (!path.startsWith("/messages")) continue;
+      const get = operations["get"] as Record<string, Json> | undefined;
+      if (!get) continue;
+
+      const responses = get["responses"] as Record<string, Json>;
+      if ("403" in responses) offenders.push(`GET ${path}`);
+    }
+
+    expect(offenders, `messaging reads advertising 403: ${offenders.join(", ")}`).toEqual(
+      [],
+    );
+  });
+
+  it("documents every socket event the server actually registers", () => {
+    // The realtime contract cannot be expressed as OpenAPI paths, so it lives
+    // in `SOCKET_EVENTS` — and a documented-but-unimplemented event is the
+    // same kind of silent lie as an unresolved $ref.
+    const documented = new Set(SOCKET_EVENTS.map((entry) => entry.event));
+
+    for (const event of [
+      "message:send",
+      "message:new",
+      "message:read",
+      "message:typing",
+      "message:stop_typing",
+      "user:online",
+      "user:offline",
+      "presence:update",
+    ]) {
+      expect(documented, `undocumented socket event ${event}`).toContain(event);
+    }
   });
 });
