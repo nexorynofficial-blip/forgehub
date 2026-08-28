@@ -2912,6 +2912,101 @@ const notificationPaths: OpenApiObject = {
   },
 };
 
+/* ── Search paths ───────────────────────────────────────────────────────── */
+
+const SEARCH_TAG = "Search";
+
+/**
+ * One endpoint (ruling D5). ARCHITECTURE §29 names `/api/v1/search` and
+ * nothing else, so the entity filter is a query parameter rather than a path
+ * segment: one contract, one rate limiter, one place authentication is decided.
+ */
+const searchPaths: OpenApiObject = {
+  "/search": {
+    get: {
+      tags: [SEARCH_TAG],
+      summary: "Search users, projects, communities, posts, and tags",
+      description:
+        "Optional authentication. An anonymous caller sees strictly public " +
+        "content; a signed-in caller additionally sees their own private and " +
+        "unlisted projects, the private projects and communities they belong " +
+        "to, their own non-public posts, and followers-only profiles they " +
+        "follow. Authenticating widens *evaluation*, never authority — a " +
+        "platform admin sees exactly what an ordinary member sees.\n\n" +
+        "Results are grouped by entity, and all five groups are always " +
+        "present: a group excluded by `type` comes back empty with a zero " +
+        "total rather than being omitted. Each group carries its own offset " +
+        "pagination, counted under the same visibility filter that produced " +
+        "its rows, so a total can never reveal a row the caller may not see.\n\n" +
+        "There is no relevance ranking and no relevance sort — matching is " +
+        "case-insensitive substring containment, which yields a boolean rather " +
+        "than a score. Ordering is explicit and deterministic.\n\n" +
+        "Rate limited more tightly than the general API surface " +
+        "(ARCHITECTURE §28): one search request runs five substring scans.",
+      security: [{}, { bearerAuth: [] }],
+      parameters: [
+        {
+          name: "q",
+          in: "query",
+          required: true,
+          description:
+            "The search term. Trimmed and whitespace-collapsed before " +
+            "validation, so a whitespace-only value is rejected. A value made " +
+            "entirely of SQL LIKE wildcards (`%`, `_`) is also rejected: it " +
+            "would match every row and turn search into a bulk export.",
+          schema: { type: "string", minLength: 1, maxLength: 100 },
+        },
+        {
+          name: "type",
+          in: "query",
+          required: false,
+          description: "Restricts the search to one entity group.",
+          schema: {
+            type: "string",
+            enum: ["all", "users", "projects", "communities", "posts", "tags"],
+            default: "all",
+          },
+        },
+        {
+          name: "sort",
+          in: "query",
+          required: false,
+          description:
+            "`recent` orders by creation time; `popular` orders by each " +
+            "entity's own popularity counter. Both break ties on id so offset " +
+            "paging is stable. There is deliberately no `relevance` value.",
+          schema: { type: "string", enum: ["recent", "popular"], default: "recent" },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          description: "1-based, applied to every group.",
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          description:
+            "Page size per group. Values above the maximum are clamped rather " +
+            "than rejected.",
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": jsonResponse(
+          "Grouped search results. An empty result is a 200 with empty groups, " +
+            "never a 404 — a query that matched nothing and a query whose " +
+            "matches are all hidden are deliberately indistinguishable.",
+          envelopeOf({ $ref: "#/components/schemas/SearchResults" }),
+        ),
+        ...errorResponses("422", "429"),
+      },
+    },
+  },
+};
+
 export const openApiDocument: OpenApiDocument = {
   openapi: "3.1.0",
   info: {
@@ -2940,6 +3035,7 @@ export const openApiDocument: OpenApiDocument = {
     { name: MESSAGE_REACTIONS_TAG, description: "Emoji reactions on messages" },
     { name: MESSAGE_READ_TAG, description: "Read watermarks and unread counts" },
     { name: NOTIFICATIONS_TAG, description: "In-app notifications and read state" },
+    { name: SEARCH_TAG, description: "Cross-entity search over public content" },
   ],
   components: {
     securitySchemes: {
@@ -3535,6 +3631,178 @@ export const openApiDocument: OpenApiDocument = {
           error: { type: "null" },
         },
       },
+      /**
+       * Search result projections (Phase 10).
+       *
+       * Deliberately narrower than the domain schemas they resemble.
+       * `SearchUser` carries six fields and no `email`, `role`, or `status`:
+       * search is the widest read surface in the API, so it gets the narrowest
+       * projection in it.
+       */
+      SearchUser: {
+        type: "object",
+        required: ["id", "username", "displayName", "builderRank", "avatarUrl", "bio"],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          username: { type: "string" },
+          displayName: { type: "string" },
+          builderRank: { type: "string" },
+          avatarUrl: { type: ["string", "null"] },
+          bio: { type: ["string", "null"] },
+        },
+      },
+
+      SearchProject: {
+        type: "object",
+        required: ["id", "slug", "title", "description", "createdAt", "tags"],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          slug: { type: "string" },
+          title: { type: "string" },
+          description: { type: "string" },
+          coverImageUrl: { type: ["string", "null"] },
+          status: { type: "string" },
+          visibility: { type: "string" },
+          likesCount: { type: "integer", minimum: 0 },
+          followersCount: { type: "integer", minimum: 0 },
+          createdAt: stringField({ format: "date-time" }),
+          owner: {
+            oneOf: [{ $ref: "#/components/schemas/SearchUser" }, { type: "null" }],
+          },
+          tags: { type: "array", items: { type: "string" } },
+        },
+      },
+
+      SearchCommunity: {
+        type: "object",
+        required: ["id", "slug", "name", "description", "category", "createdAt", "tags"],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          slug: { type: "string" },
+          name: { type: "string" },
+          description: { type: "string" },
+          avatarUrl: { type: ["string", "null"] },
+          category: { type: "string" },
+          visibility: { type: "string" },
+          memberCount: { type: "integer", minimum: 0 },
+          createdAt: stringField({ format: "date-time" }),
+          tags: { type: "array", items: { type: "string" } },
+        },
+      },
+
+      SearchPost: {
+        type: "object",
+        required: ["id", "type", "content", "createdAt"],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          type: { type: "string" },
+          content: { type: "string" },
+          visibility: { type: "string" },
+          likesCount: { type: "integer", minimum: 0 },
+          commentsCount: { type: "integer", minimum: 0 },
+          createdAt: stringField({ format: "date-time" }),
+          author: {
+            oneOf: [{ $ref: "#/components/schemas/SearchUser" }, { type: "null" }],
+          },
+        },
+      },
+
+      SearchTag: {
+        type: "object",
+        required: ["id", "slug", "name", "usageCount"],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          slug: { type: "string" },
+          name: { type: "string" },
+          usageCount: { type: "integer", minimum: 0 },
+        },
+      },
+
+      /**
+       * One entity's page. `pagination.total` is counted under the same
+       * visibility filter that produced `items`, so it never reports rows the
+       * caller may not see.
+       */
+      SearchResults: {
+        type: "object",
+        required: [
+          "query",
+          "type",
+          "sort",
+          "users",
+          "projects",
+          "communities",
+          "posts",
+          "tags",
+          "totalResults",
+        ],
+        properties: {
+          query: stringField({ description: "The normalized term that was run." }),
+          type: {
+            type: "string",
+            enum: ["all", "users", "projects", "communities", "posts", "tags"],
+          },
+          sort: { type: "string", enum: ["recent", "popular"] },
+          users: {
+            type: "object",
+            required: ["items", "pagination"],
+            properties: {
+              items: {
+                type: "array",
+                items: { $ref: "#/components/schemas/SearchUser" },
+              },
+              pagination: { $ref: "#/components/schemas/Pagination" },
+            },
+          },
+          projects: {
+            type: "object",
+            required: ["items", "pagination"],
+            properties: {
+              items: {
+                type: "array",
+                items: { $ref: "#/components/schemas/SearchProject" },
+              },
+              pagination: { $ref: "#/components/schemas/Pagination" },
+            },
+          },
+          communities: {
+            type: "object",
+            required: ["items", "pagination"],
+            properties: {
+              items: {
+                type: "array",
+                items: { $ref: "#/components/schemas/SearchCommunity" },
+              },
+              pagination: { $ref: "#/components/schemas/Pagination" },
+            },
+          },
+          posts: {
+            type: "object",
+            required: ["items", "pagination"],
+            properties: {
+              items: {
+                type: "array",
+                items: { $ref: "#/components/schemas/SearchPost" },
+              },
+              pagination: { $ref: "#/components/schemas/Pagination" },
+            },
+          },
+          tags: {
+            type: "object",
+            required: ["items", "pagination"],
+            properties: {
+              items: { type: "array", items: { $ref: "#/components/schemas/SearchTag" } },
+              pagination: { $ref: "#/components/schemas/Pagination" },
+            },
+          },
+          totalResults: {
+            type: "integer",
+            minimum: 0,
+            description: "Sum of the five visible group totals.",
+          },
+        },
+      },
+
       Pagination: {
         type: "object",
         required: ["page", "limit", "total", "totalPages"],
@@ -4465,6 +4733,7 @@ export const openApiDocument: OpenApiDocument = {
     ...communityPaths,
     ...messagePaths,
     ...notificationPaths,
+    ...searchPaths,
   },
 };
 

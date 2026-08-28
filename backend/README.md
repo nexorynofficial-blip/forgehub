@@ -11,9 +11,10 @@ ownership, rules, tags, events, pinned posts, and community posts — and
 messaging: direct conversations, real-time delivery, typing indicators, read
 receipts, unread counts, reactions, attachment references, presence, and search
 within a conversation — and notifications: persisted in-app notifications with
-real-time delivery, driven by every trigger across Phases 4–8. Search,
-achievements, moderation, admin, and uploads are later phases and are
-deliberately not implemented.
+real-time delivery, driven by every trigger across Phases 4–8 — and search:
+one endpoint across users, projects, communities, posts, and tags, applying
+each domain's own visibility rules in SQL. Achievements, moderation, admin,
+and uploads are later phases and are deliberately not implemented.
 
 ## Stack
 
@@ -117,6 +118,7 @@ backend/
       communities/      Phase 7 — membership, roles, rules, tags, events, pins
       messages/         Phase 8 — conversations, messages, receipts, reactions
       notifications/    Phase 9 — persistence, suppression, delivery, read state
+      search/           Phase 10 — cross-entity search, visibility applied in SQL
     ports/
       notification.port.ts        Live as of Phase 9; no-op retained
     repositories/
@@ -162,6 +164,7 @@ backend/
     COMMUNITIES.md              Community visibility, roles, resources, the posts seam
     MESSAGING.md                Conversation access, whoCanMessage, presence, receipts
     NOTIFICATIONS.md            Suppression rules, collapse policy, the port, fan-out
+    SEARCH.md                   Entities, visibility model, ranking, the D1–D14 rulings
 ```
 
 Business logic lives in module services, database access in module

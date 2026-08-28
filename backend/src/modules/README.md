@@ -50,7 +50,7 @@ BACKEND_ARCHITECTURE.md §38:
 | `communities`   | 7     | **done** — roles, rules, tags, events, pins        |
 | `messages`      | 8     | **done** — conversations, receipts, reactions      |
 | `notifications` | 9     | **done** — suppression, delivery, read state       |
-| `search`        | 10    |                                                    |
+| `search`        | 10    | **done** — five entities, one endpoint, no ranking |
 | `achievements`  | 10    |                                                    |
 | `moderation`    | 11    |                                                    |
 | `admin`         | 11    |                                                    |
@@ -127,6 +127,25 @@ projection layer — with two things worth knowing:
 - **There is no create endpoint.** Notifications are produced by domain events;
   the REST surface is read and mark-read only. See `docs/NOTIFICATIONS.md`.
 
+## `search/`
+
+The Phase 10 module, and the only one that reads across every other aggregate.
+Same shape as its predecessors — pure rules (`search.access.ts`), a repository
+that owns every Prisma call, one projection layer — with three things worth
+knowing:
+
+- **It is read-only and depends on nothing but data.** One route, `GET
+/search`, no writes, no socket surface. Domain modules do not know it exists,
+  so the dependency arrow runs one way and there is no seam to invert.
+- **Visibility is applied in SQL, and admins get no widening.** The clauses
+  reuse `posts` and `communities` `listVisibilityWhere` where those are
+  exported, and re-express the project and user clauses where they are not.
+  Every reuse passes a null role, which is what structurally disables the
+  admin branches: search is discovery, not moderation.
+- **`search.access.ts` mirrors the SQL as pure predicates**, the same way
+  `project.visibility.ts` mirrors its repository. The repository tests pin the
+  two together on real rows so they cannot drift. See `docs/SEARCH.md`.
+
 ## Cross-module dependencies
 
 Modules may depend on those above them, never below:
@@ -153,6 +172,10 @@ messages ──►  follows     (blocking outranks membership; the `followers` c
 notifications ► users     (actors are projected to a four-field summary)
 notifications ► follows   (blocking suppresses a notification in either
                            direction)
+search   ──►  posts       (reuses the exported `listVisibilityWhere`)
+search   ──►  communities (reuses the exported `listVisibilityWhere`)
+                          (projects' equivalent is module-private, so that one
+                           clause is re-expressed and pinned by tests)
 (everything) ► ports/notification.port.ts
                           (follows, posts, projects, communities, and messages
                            raise events through the port — never by importing

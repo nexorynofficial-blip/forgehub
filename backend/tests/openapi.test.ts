@@ -336,4 +336,154 @@ describe("OpenAPI document", () => {
     const documented = new Set(SOCKET_EVENTS.map((entry) => entry.event));
     expect(documented).toContain("notification:new");
   });
+
+  /* ── Phase 10 — Search ─────────────────────────────────────────────────── */
+
+  it("declares exactly one Phase 10 search path", () => {
+    // Ruling D5: the entity filter is a query parameter, not a path segment.
+    // `/search/users`, `/search/projects`, and friends must not exist.
+    const paths = openApiDocument.paths as Record<string, unknown>;
+
+    expect(paths).toHaveProperty(["/search"]);
+
+    const searchPaths = Object.keys(paths).filter((path) => path.startsWith("/search"));
+    expect(searchPaths).toEqual(["/search"]);
+  });
+
+  it("declares the Phase 10 schemas", () => {
+    const components = openApiDocument.components as Record<string, unknown>;
+    const schemas = components["schemas"] as Record<string, unknown>;
+
+    for (const name of [
+      "SearchResults",
+      "SearchUser",
+      "SearchProject",
+      "SearchCommunity",
+      "SearchPost",
+      "SearchTag",
+    ]) {
+      expect(schemas, `missing schema ${name}`).toHaveProperty([name]);
+    }
+  });
+
+  it("documents search as read-only", () => {
+    // Search answers questions; it never writes. Anything but GET on this path
+    // would be a Phase 11 admin or indexing surface arriving early.
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    expect(Object.keys(paths["/search"] ?? {})).toEqual(["get"]);
+  });
+
+  it("documents search authentication as optional", () => {
+    // Ruling D4. `security: [{}, { bearerAuth: [] }]` is how OpenAPI spells
+    // "anonymous is allowed, and a bearer token is also accepted". An absent
+    // `security` key would inherit any document-level requirement instead, and
+    // a bare `[{ bearerAuth: [] }]` would wrongly promise a 401 to anonymous
+    // callers of an endpoint that serves them.
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const operation = paths["/search"]?.["get"] as Record<string, Json>;
+    const security = operation["security"] as Record<string, Json>[];
+
+    expect(Array.isArray(security)).toBe(true);
+    expect(security).toContainEqual({});
+    expect(security).toContainEqual({ bearerAuth: [] });
+  });
+
+  it("documents no 403 and no 404 on search", () => {
+    // Search has no forbidden state and no missing resource: content is
+    // discoverable or absent, and either code would distinguish "hidden from
+    // you" from "does not exist".
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const operation = paths["/search"]?.["get"] as Record<string, Json>;
+    const responses = operation["responses"] as Record<string, Json>;
+
+    expect(Object.keys(responses)).not.toContain("403");
+    expect(Object.keys(responses)).not.toContain("404");
+  });
+
+  it("documents the 429 the stricter search limiter can produce", () => {
+    // ARCHITECTURE §28 puts search under "stricter limits", so a client has to
+    // know this endpoint can rate-limit it.
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const operation = paths["/search"]?.["get"] as Record<string, Json>;
+    const responses = operation["responses"] as Record<string, Json>;
+
+    expect(Object.keys(responses)).toContain("429");
+    expect(Object.keys(responses)).toContain("422");
+  });
+
+  it("documents every search query parameter the schema accepts", () => {
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const operation = paths["/search"]?.["get"] as Record<string, Json>;
+    const parameters = operation["parameters"] as { name: string; required?: boolean }[];
+    const names = parameters.map((parameter) => parameter.name);
+
+    expect([...names].sort()).toEqual(["limit", "page", "q", "sort", "type"]);
+    // `q` is the only required one; everything else has a documented default.
+    expect(parameters.find((parameter) => parameter.name === "q")?.required).toBe(true);
+  });
+
+  it("documents the type and sort enums as the ruled-in values only", () => {
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const operation = paths["/search"]?.["get"] as Record<string, Json>;
+    const parameters = operation["parameters"] as {
+      name: string;
+      schema: { enum?: string[] };
+    }[];
+
+    const type = parameters.find((parameter) => parameter.name === "type");
+    expect(type?.schema.enum).toEqual([
+      "all",
+      "users",
+      "projects",
+      "communities",
+      "posts",
+      "tags",
+    ]);
+
+    // No `relevance`: ruling D6 forbids a score, and ILIKE cannot produce one.
+    const sort = parameters.find((parameter) => parameter.name === "sort");
+    expect(sort?.schema.enum).toEqual(["recent", "popular"]);
+  });
+
+  it("declares no messages, notifications, or comments search type", () => {
+    // Phase-boundary guard. Phases 8 and 9 scoped their own searches
+    // deliberately, and PRD §15 / TRD §24 name exactly five entities.
+    const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+    const operation = paths["/search"]?.["get"] as Record<string, Json>;
+    const parameters = operation["parameters"] as {
+      name: string;
+      schema: { enum?: string[] };
+    }[];
+    const type = parameters.find((parameter) => parameter.name === "type");
+
+    for (const excluded of ["messages", "notifications", "comments", "achievements"]) {
+      expect(type?.schema.enum, excluded).not.toContain(excluded);
+    }
+  });
+
+  it("never exposes email, role, or status in a search projection", () => {
+    // The projection chokepoint, asserted at the contract level as well as in
+    // the security suite.
+    const components = openApiDocument.components as Record<string, unknown>;
+    const schemas = components["schemas"] as Record<string, Record<string, Json>>;
+    const searchUser = schemas["SearchUser"] as unknown as {
+      properties: Record<string, Json>;
+    };
+
+    expect(Object.keys(searchUser.properties).sort()).toEqual([
+      "avatarUrl",
+      "bio",
+      "builderRank",
+      "displayName",
+      "id",
+      "username",
+    ]);
+  });
+
+  it("adds no socket event for search", () => {
+    // Nothing in PRD §15, TRD §24, or ARCHITECTURE §14 asks for real-time
+    // search, so Phase 10 registers no handler and documents no event.
+    const documented = SOCKET_EVENTS.map((entry) => entry.event);
+    expect(documented.filter((event) => event.startsWith("search"))).toEqual([]);
+  });
 });

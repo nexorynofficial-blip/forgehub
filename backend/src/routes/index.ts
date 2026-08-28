@@ -10,6 +10,7 @@ import {
   createPostRouter,
 } from "../modules/posts/posts.routes.js";
 import { createProjectRouter } from "../modules/projects/projects.routes.js";
+import { createSearchRouter } from "../modules/search/search.routes.js";
 import { createUserRouter } from "../modules/users/users.routes.js";
 import { successResponse } from "../utils/response.js";
 
@@ -63,6 +64,11 @@ export function createV1Router(): Router {
   // requires authentication because a notification list is a digest of one
   // person's received activity and has no public face.
   router.use("/notifications", createNotificationRouter());
+  // Search (Phase 10). ARCHITECTURE §29 names `/search`; it is a single route
+  // with an entity filter rather than one route per entity, and `optionalAuth`
+  // rather than `requireAuth` — public content must be findable by anonymous
+  // visitors, and a signed-in viewer only widens what *they* may discover.
+  router.use("/search", createSearchRouter());
 
   return router;
 }
