@@ -126,6 +126,25 @@ const envSchema = z.object({
   EMAIL_VERIFICATION_EXPIRES: z.string().min(1).default("24h"),
   PASSWORD_RESET_EXPIRES: z.string().min(1).default("1h"),
 
+  /* ── AI ──────────────────────────────────────────────────────────────── */
+
+  /**
+   * Which AI provider `integrations/ai` composes (BACKEND_TRD.md §27).
+   *
+   * TRD §27 lists OpenAI, Anthropic, Google, and local models; only the local
+   * one exists so far, so the enum has the two values that can actually be
+   * selected today. A hosted provider adds a value here and a `case` in
+   * `integrations/ai/index.ts` — nothing else.
+   *
+   * There is deliberately **no `AI_API_KEY` yet.** TRD §13 lists "AI API
+   * keys" among the secrets that must never be committed, and the way to
+   * honour that while no provider needs one is to not invent the variable —
+   * an unused key in `.env.example` is a placeholder people paste real
+   * credentials into. It arrives with the provider that requires it, as a
+   * `secret()` like every other credential in this file.
+   */
+  AI_PROVIDER: z.enum(["local", "disabled"]).default("local"),
+
   /* ── Rate limiting & brute force ─────────────────────────────────────── */
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),

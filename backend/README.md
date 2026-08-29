@@ -129,6 +129,7 @@ backend/
       audit.repository.ts         Shared, cross-cutting audit writes
     integrations/
       email/            Provider abstraction + console transport
+      ai/               Phase 12 — AIService, provider seam, local heuristics
     sockets/
       socket.ts         Socket.IO server
       auth.socket.ts    Handshake authentication
@@ -171,6 +172,7 @@ backend/
     SEARCH.md                   Entities, visibility model, ranking, the D1–D14 rulings
     MODERATION.md               Reports, lifecycle, actions, audit, the blocking exception
     ADMIN.md                    Users, role boundary, analytics, audit-log access
+    AI.md                       The provider abstraction, capabilities, why no endpoint
 ```
 
 Business logic lives in module services, database access in module
