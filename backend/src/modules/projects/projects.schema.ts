@@ -230,7 +230,7 @@ export type OffsetQuery = z.infer<typeof offsetQuerySchema>;
 
 /** Cursor paging for the high-volume changelog. */
 export const cursorQuerySchema = z.object({
-  cursor: z.string().min(1).optional(),
+  cursor: z.string().uuid("Invalid cursor").optional(),
   limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).default(20),
 });
 export type CursorQuery = z.infer<typeof cursorQuerySchema>;

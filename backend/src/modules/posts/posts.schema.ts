@@ -214,7 +214,8 @@ export type FeedFilterValue = (typeof FEED_FILTERS)[number];
 
 export const feedQuerySchema = z.object({
   filter: z.enum(FEED_FILTERS).default("latest"),
-  cursor: z.string().min(1).optional(),
+  /** A post id, so it gets the same UUID check as the path params above. */
+  cursor: z.string().uuid("Invalid cursor").optional(),
   limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).default(20),
 });
 export type FeedQuery = z.infer<typeof feedQuerySchema>;
@@ -227,7 +228,7 @@ export const newCountQuerySchema = z.object({
 export type NewCountQuery = z.infer<typeof newCountQuerySchema>;
 
 export const cursorQuerySchema = z.object({
-  cursor: z.string().min(1).optional(),
+  cursor: z.string().uuid("Invalid cursor").optional(),
   limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).default(20),
 });
 export type CursorQuery = z.infer<typeof cursorQuerySchema>;

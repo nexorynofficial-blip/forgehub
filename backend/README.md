@@ -173,6 +173,7 @@ backend/
     MODERATION.md               Reports, lifecycle, actions, audit, the blocking exception
     ADMIN.md                    Users, role boundary, analytics, audit-log access
     AI.md                       The provider abstraction, capabilities, why no endpoint
+    TESTING.md                  Phase 13 audit, the cursor defect, debt register
 ```
 
 Business logic lives in module services, database access in module

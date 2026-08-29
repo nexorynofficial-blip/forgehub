@@ -23,9 +23,18 @@ export const offsetPaginationSchema = z.object({
 
 export type OffsetPaginationQuery = z.infer<typeof offsetPaginationSchema>;
 
-/** Query schema for cursor pagination. The cursor is opaque to clients. */
+/**
+ * Query schema for cursor pagination. The cursor is opaque to clients.
+ *
+ * Opaque, but not unvalidated. Every cursor this codebase issues is a row id
+ * from `buildCursorPage`, and every id it pages over is a `@db.Uuid` column,
+ * so the cursor is checked as a UUID for the reason `posts.schema.ts` gives
+ * for path ids: *"a malformed id is a 422 rather than a database trip."*
+ * Without the check, `cursor: { id: <garbage> }` reaches PostgreSQL, which
+ * rejects the malformed uuid with an error the handler maps to a 500.
+ */
 export const cursorPaginationSchema = z.object({
-  cursor: z.string().min(1).optional(),
+  cursor: z.string().uuid("Invalid cursor").optional(),
   limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
 });
 

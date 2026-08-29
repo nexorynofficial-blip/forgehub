@@ -349,7 +349,7 @@ export type CommunitySort = (typeof COMMUNITY_SORTS)[number];
  * `category` and `q` let a client that outgrows that push the work server-side.
  */
 export const communityListQuerySchema = z.object({
-  cursor: z.string().min(1).optional(),
+  cursor: z.string().uuid("Invalid cursor").optional(),
   limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).default(20),
   sort: z.enum(COMMUNITY_SORTS).default("recent"),
   category: category.optional(),
@@ -360,7 +360,7 @@ export type CommunityListQuery = z.infer<typeof communityListQuerySchema>;
 
 /** Cursor paging for child collections (members, posts, pins). */
 export const communityCursorQuerySchema = z.object({
-  cursor: z.string().min(1).optional(),
+  cursor: z.string().uuid("Invalid cursor").optional(),
   limit: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).default(20),
 });
 export type CommunityCursorQuery = z.infer<typeof communityCursorQuerySchema>;
