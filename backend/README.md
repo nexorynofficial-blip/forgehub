@@ -13,8 +13,10 @@ receipts, unread counts, reactions, attachment references, presence, and search
 within a conversation — and notifications: persisted in-app notifications with
 real-time delivery, driven by every trigger across Phases 4–8 — and search:
 one endpoint across users, projects, communities, posts, and tags, applying
-each domain's own visibility rules in SQL. Achievements, moderation, admin,
-and uploads are later phases and are deliberately not implemented.
+each domain's own visibility rules in SQL — and moderation and
+administration: reports, a review queue, the seven moderation actions, user
+management, analytics, and an append-only audit trail. Achievements, uploads,
+and AI are later phases and are deliberately not implemented.
 
 ## Stack
 
@@ -119,6 +121,8 @@ backend/
       messages/         Phase 8 — conversations, messages, receipts, reactions
       notifications/    Phase 9 — persistence, suppression, delivery, read state
       search/           Phase 10 — cross-entity search, visibility applied in SQL
+      moderation/       Phase 11 — reports, actions, transactional audit
+      admin/            Phase 11 — user management, analytics, audit-log access
     ports/
       notification.port.ts        Live as of Phase 9; no-op retained
     repositories/
@@ -165,6 +169,8 @@ backend/
     MESSAGING.md                Conversation access, whoCanMessage, presence, receipts
     NOTIFICATIONS.md            Suppression rules, collapse policy, the port, fan-out
     SEARCH.md                   Entities, visibility model, ranking, the D1–D14 rulings
+    MODERATION.md               Reports, lifecycle, actions, audit, the blocking exception
+    ADMIN.md                    Users, role boundary, analytics, audit-log access
 ```
 
 Business logic lives in module services, database access in module

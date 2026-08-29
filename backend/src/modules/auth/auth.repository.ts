@@ -456,4 +456,89 @@ export async function consumeBackupCode(
   return result.count === 1;
 }
 
+/* ── Lazy suspension expiry (Phase 11, ruling R12) ───────────────────────── */
+
+/**
+ * Lifts a temporary suspension that has run out, and reports the account's
+ * effective status.
+ *
+ * ARCHITECTURE §25 lists "Temporary suspension" and "Permanent ban" as
+ * distinct moderation actions, and the schema draws the distinction on
+ * `ModerationAction.expiresAt` — documented there as *"Set for temporary
+ * suspensions; null means permanent."* Both leave `User.status` at `banned`,
+ * because `ModerationStatus` has no fourth member. So the pair
+ * `(status = banned, newest action = suspension with a past expiry)` is a
+ * suspension that is over, and this is where it ends.
+ *
+ * **Lazily, with no scheduler.** Ruling R12 forbids a worker, a queue, or a
+ * background process, and none is needed: a suspension only matters when the
+ * suspended person tries to do something, so the check belongs on the path
+ * they take when they try. The cost is one indexed query — on
+ * `moderation_actions(targetUserId, createdAt DESC)` — and it is paid only by
+ * accounts that are actually banned, which is the rare case.
+ *
+ * The *newest* status-affecting action decides. A user who was suspended and
+ * then banned outright stays banned: the ban is newer, carries no expiry, and
+ * this returns without touching the row. A user whose newest such action is a
+ * lapsed suspension is restored to `active`.
+ *
+ * The restore and its audit row commit together. There is no moderator behind
+ * this, so `actorId` is null — the trail records that the system lifted it,
+ * which is the truth.
+ *
+ * Lives in the auth repository rather than the moderation module on purpose.
+ * Auth is Phase 3 and moderation is Phase 11; importing the later module into
+ * the earlier one would point the dependency arrow backwards. Reading a
+ * `moderation_actions` row here is data-level coupling only, and it keeps the
+ * call sites that need it — the middleware, the login paths, and the socket
+ * handshake — reaching for something already in their own module.
+ */
+export async function liftExpiredSuspension(
+  userId: string,
+  status: ModerationStatus,
+): Promise<ModerationStatus> {
+  if (status !== "banned") return status;
+
+  const latest = await prisma.moderationAction.findFirst({
+    where: {
+      targetUserId: userId,
+      action: { in: ["suspension", "ban", "unban", "reinstate", "shadow_ban"] },
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { action: true, expiresAt: true },
+  });
+
+  if (latest === null) return status;
+  if (latest.action !== "suspension") return status;
+  if (latest.expiresAt === null) return status;
+  if (latest.expiresAt.getTime() > Date.now()) return status;
+
+  const expiredAt = latest.expiresAt.toISOString();
+
+  return prisma.$transaction(async (tx) => {
+    // Guarded on the status still being `banned`, so a moderator re-banning
+    // the account in the same instant is not silently undone by this.
+    const lifted = await tx.user.updateMany({
+      where: { id: userId, status: "banned" },
+      data: { status: "active" },
+    });
+
+    if (lifted.count === 0) return status;
+
+    await tx.auditLog.create({
+      data: {
+        actorId: null,
+        action: "USER_SUSPENSION_EXPIRED",
+        targetType: "user",
+        targetId: userId,
+        metadata: { expiredAt },
+        ipAddress: null,
+        userAgent: null,
+      },
+    });
+
+    return "active";
+  });
+}
+
 export type { ModerationStatus, UserRole };

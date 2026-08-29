@@ -88,6 +88,40 @@ export const AuditAction = {
   COMMUNITY_MEMBER_REMOVED: "COMMUNITY_MEMBER_REMOVED",
   COMMUNITY_ROLE_CHANGED: "COMMUNITY_ROLE_CHANGED",
   COMMUNITY_OWNERSHIP_TRANSFERRED: "COMMUNITY_OWNERSHIP_TRANSFERRED",
+
+  /* Phase 11 — moderation and administration. Unlike every block above, these
+     are not discretionary: BACKEND_ARCHITECTURE.md §26 names `ROLE_CHANGED`,
+     `USER_BANNED`, and `POST_REMOVED` directly, and BACKEND_TRD.md §28 requires
+     that *"All important moderation actions must generate audit records."*
+
+     They are also written differently. Every verb above is recorded through
+     `recordAuditEvent`, which swallows its own failures — losing one login
+     record is not worth failing a login. A moderation record is not optional in
+     that way, so `moderation.repository.ts` writes these inside the same
+     transaction as the mutation they describe: either both land or neither
+     does. See `docs/MODERATION.md`. */
+  REPORT_CREATED: "REPORT_CREATED",
+  REPORT_REVIEWED: "REPORT_REVIEWED",
+  REPORT_RESOLVED: "REPORT_RESOLVED",
+  REPORT_DISMISSED: "REPORT_DISMISSED",
+
+  USER_WARNED: "USER_WARNED",
+  USER_SUSPENDED: "USER_SUSPENDED",
+  USER_BANNED: "USER_BANNED",
+  USER_SHADOW_BANNED: "USER_SHADOW_BANNED",
+  USER_UNBANNED: "USER_UNBANNED",
+  USER_REINSTATED: "USER_REINSTATED",
+  /* Written by the lazy-expiry path in `auth.repository.ts`, which has no
+     moderator behind it — the actor on this row is null by construction. */
+  USER_SUSPENSION_EXPIRED: "USER_SUSPENSION_EXPIRED",
+
+  POST_REMOVED: "POST_REMOVED",
+  COMMENT_REMOVED: "COMMENT_REMOVED",
+  PROJECT_REMOVED: "PROJECT_REMOVED",
+  COMMUNITY_REMOVED: "COMMUNITY_REMOVED",
+  MESSAGE_REMOVED: "MESSAGE_REMOVED",
+
+  ROLE_CHANGED: "ROLE_CHANGED",
 } as const;
 
 export type AuditActionValue = (typeof AuditAction)[keyof typeof AuditAction];

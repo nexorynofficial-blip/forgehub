@@ -30,10 +30,12 @@ import { logger } from "../utils/logger.js";
  * A subset of the schema's `NotificationType`, and deliberately still a subset
  * after Phase 9:
  *
- *   - **`achievement`** is absent because no awarding engine exists. That is
- *     Phase 10, and adding the member here would invite a caller before there
- *     is anything to call it for.
- *   - **`moderation`** is absent for the same reason — Phase 11 owns it.
+ *   - **`achievement`** is absent because no awarding engine exists. Adding
+ *     the member here would invite a caller before there is anything to call
+ *     it for.
+ *   - **`moderation`** is **present as of Phase 11**, which owns it. It is the
+ *     first member that is normally raised with no actor at all — see
+ *     `actorId` below.
  *   - **`invite`** is absent because the two specific members below say the
  *     same thing more precisely, and `NotificationPreference` is keyed by type:
  *     a user who mutes one kind of invitation should not silently mute both.
@@ -53,25 +55,42 @@ export type PortNotificationType =
   | "reply"
   | "mention"
   | "message"
-  | "project_update";
+  | "project_update"
+  | "moderation";
 
 /**
  * The polymorphic target, mirroring the schema's `(entityType, entityId)`.
  *
  * Widened in Phase 9 to carry `community` and `conversation`, which the
- * community-invite and message triggers need. Every member is a value of the
- * schema's `EntityType` enum; the union is written out rather than imported
- * from Prisma so a domain service is not required to import Prisma types to
- * raise a notification.
+ * community-invite and message triggers need, and in Phase 11 to carry
+ * `message`, which a moderator removing one direct message needs. Every member
+ * is a value of the schema's `EntityType` enum; the union is written out rather
+ * than imported from Prisma so a domain service is not required to import
+ * Prisma types to raise a notification.
  */
 export type PortEntityType =
-  "project" | "user" | "post" | "comment" | "community" | "conversation";
+  "project" | "user" | "post" | "comment" | "community" | "conversation" | "message";
 
 export interface NotificationEvent {
   /** Who receives it. */
   recipientId: string;
-  /** Who caused it. Never a client-supplied id — always the verified actor. */
-  actorId: string;
+  /**
+   * Who caused it. Never a client-supplied id — always the verified actor, or
+   * **null for a system notification**.
+   *
+   * Nullable as of Phase 11. The schema has always allowed it (*"Null for
+   * system-generated notifications (achievements, moderation)"*) and
+   * `notifications.service.createNotification` has always accepted it; the
+   * port was the one link in the chain that did not, because until now every
+   * trigger had a person behind it.
+   *
+   * Moderation is raised with `actorId: null` deliberately, and it buys two
+   * things at once. It keeps the acting moderator's identity out of a banned
+   * user's notification panel, and it means `resolveDelivery` skips the self
+   * and block checks entirely — so a user who blocked the moderator still
+   * receives the notice, which ruling R11 requires.
+   */
+  actorId: string | null;
   type: PortNotificationType;
   /**
    * What the notification is about, for the types that need it. Mirrors the

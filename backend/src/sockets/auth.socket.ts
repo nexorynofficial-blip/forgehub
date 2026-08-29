@@ -1,6 +1,9 @@
 import type { ExtendedError, Socket } from "socket.io";
 
-import { findActiveSessionWithUser } from "../modules/auth/auth.repository.js";
+import {
+  findActiveSessionWithUser,
+  liftExpiredSuspension,
+} from "../modules/auth/auth.repository.js";
 import { verifyAccessToken } from "../utils/jwt.js";
 import { logger } from "../utils/logger.js";
 
@@ -89,7 +92,11 @@ export async function authenticateSocket(
       return;
     }
 
-    if (active.user.status === "banned") {
+    // A lapsed temporary suspension is lifted on the connection attempt it
+    // would otherwise have refused, the same as on an HTTP request (R12).
+    const status = await liftExpiredSuspension(active.user.id, active.user.status);
+
+    if (status === "banned") {
       next(reject("This account has been suspended", "AUTHORIZATION_ERROR"));
       return;
     }

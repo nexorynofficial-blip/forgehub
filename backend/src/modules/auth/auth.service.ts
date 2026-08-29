@@ -336,7 +336,7 @@ export async function login(
   // Checked only *after* the password verifies. At this point the caller
   // already proved they own the account, so a specific message reveals
   // nothing they did not know — and a generic one would be actively unhelpful.
-  if (user.status === "banned") {
+  if ((await repo.liftExpiredSuspension(user.id, user.status)) === "banned") {
     throw AppError.authorization("This account has been suspended");
   }
 
@@ -457,7 +457,7 @@ export async function refresh(
     throw AppError.authentication("Refresh token is no longer valid");
   }
 
-  if (user.status === "banned") {
+  if ((await repo.liftExpiredSuspension(user.id, user.status)) === "banned") {
     await repo.revokeSession(session.id);
     throw AppError.authorization("This account has been suspended");
   }
@@ -992,7 +992,7 @@ export async function completeTwoFactorChallenge(
   await clearFailedAttempts("two-factor", payload.userId);
   await consumeTwoFactorChallenge(inputs.challengeToken);
 
-  if (user.status === "banned") {
+  if ((await repo.liftExpiredSuspension(user.id, user.status)) === "banned") {
     throw AppError.authorization("This account has been suspended");
   }
 

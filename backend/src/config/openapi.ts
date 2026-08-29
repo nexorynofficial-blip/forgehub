@@ -3007,6 +3007,607 @@ const searchPaths: OpenApiObject = {
   },
 };
 
+/* ── Moderation paths (Phase 11) ────────────────────────────────────────── */
+
+const MODERATION_TAG = "Moderation";
+const ADMIN_TAG = "Admin";
+
+const reportRef = { $ref: "#/components/schemas/Report" };
+const reportDetailRef = { $ref: "#/components/schemas/ReportDetail" };
+
+const REPORT_TARGET_ENUM = [
+  "user",
+  "post",
+  "comment",
+  "project",
+  "community",
+  "message",
+] as const;
+
+const REPORT_STATUS_ENUM = ["pending", "reviewing", "resolved", "dismissed"] as const;
+
+const reportListResponse = {
+  allOf: [
+    { $ref: "#/components/schemas/SuccessEnvelope" },
+    {
+      type: "object",
+      required: ["pagination"],
+      properties: {
+        data: { type: "array", items: reportDetailRef },
+        pagination: { $ref: "#/components/schemas/Pagination" },
+      },
+    },
+  ],
+};
+
+/**
+ * Two authorization tiers on one router (ARCHITECTURE §25, §29).
+ *
+ * Filing is `requireAuth` — PRD §17 opens with "Users must be able to report".
+ * Everything else is staff-only, so every other operation advertises 403.
+ */
+const moderationPaths: OpenApiObject = {
+  "/moderation/reports": {
+    post: {
+      tags: [MODERATION_TAG],
+      summary: "File a report",
+      description:
+        "Any authenticated user may file a report. **Blocking is deliberately " +
+        "not consulted** — a reporter who has blocked the person they are " +
+        "reporting still files successfully, because the user most likely to " +
+        "have blocked a harasser is the one who needs to report them. Nothing " +
+        "else about blocking is weakened.\n\n" +
+        "The reporter is taken from the access token; a `reporterId` in the " +
+        "body is stripped before validation and has no effect. `status` is " +
+        "likewise not accepted — every report is created `pending`.\n\n" +
+        "Rate limited more tightly than the general API surface: mass filing " +
+        "is a denial of service against moderators rather than against the " +
+        "server.",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({
+        type: "object",
+        required: ["targetType", "targetId", "reason"],
+        properties: {
+          targetType: { type: "string", enum: [...REPORT_TARGET_ENUM] },
+          targetId: stringField({ format: "uuid" }),
+          reason: {
+            type: "string",
+            enum: [
+              "spam",
+              "harassment",
+              "inappropriate_content",
+              "impersonation",
+              "other",
+            ],
+          },
+          details: stringField({ maxLength: 2000, default: "" }),
+        },
+      }),
+      responses: {
+        "201": jsonResponse(
+          "Report filed",
+          envelopeOf({ type: "object", properties: { report: reportRef } }),
+        ),
+        ...errorResponses("401", "404", "422", "429"),
+      },
+    },
+    get: {
+      tags: [MODERATION_TAG],
+      summary: "Read the moderation queue",
+      description:
+        "Moderator, community admin, or platform admin only. Ordered **oldest " +
+        "first**, which is what the schema's `reports(status, createdAt)` index " +
+        "exists for — a queue that surfaced the newest report first would " +
+        "starve the oldest. Ties break on id so offset paging is stable.\n\n" +
+        "`status` accepts all four lifecycle states including `reviewing`. The " +
+        "shipped admin UI filters on three and never sends the fourth; the " +
+        "backend keeps it because it is the state that lets a moderator claim " +
+        "a report.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: [...REPORT_STATUS_ENUM] },
+        },
+        {
+          name: "targetType",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: [...REPORT_TARGET_ENUM] },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": jsonResponse("A page of the moderation queue", reportListResponse),
+        ...errorResponses("401", "403", "422", "429"),
+      },
+    },
+  },
+
+  "/moderation/reports/{id}": {
+    get: {
+      tags: [MODERATION_TAG],
+      summary: "Read one report",
+      description:
+        "Staff only. A reporter cannot read their own report back: it carries " +
+        "the reviewer's identity, the denormalized target author, and a " +
+        "free-text resolution, none of which is the filer's business.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: stringField({ format: "uuid" }),
+        },
+      ],
+      responses: {
+        "200": jsonResponse(
+          "The report",
+          envelopeOf({ type: "object", properties: { report: reportDetailRef } }),
+        ),
+        ...errorResponses("401", "403", "404", "422", "429"),
+      },
+    },
+    patch: {
+      tags: [MODERATION_TAG],
+      summary: "Move a report through its lifecycle",
+      description:
+        "Legal transitions are `pending → reviewing → resolved` and " +
+        "`pending → reviewing → dismissed`. `resolved` and `dismissed` are " +
+        "terminal, and there is no shortcut from `pending` straight to a " +
+        "closed state — a report must be claimed before it can be closed, " +
+        "which is what makes `reviewerId` meaningful.\n\n" +
+        "An illegal transition is **409**, not 422: the value is well-formed " +
+        "and would be legal from another state. Two moderators claiming the " +
+        "same pending report race in the database; the loser gets the same " +
+        "409, which is the truthful answer.\n\n" +
+        "`reviewerId` and `resolvedAt` are server-owned and are stripped from " +
+        "the body if sent.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: stringField({ format: "uuid" }),
+        },
+      ],
+      requestBody: requestBody({
+        type: "object",
+        required: ["status"],
+        properties: {
+          status: { type: "string", enum: [...REPORT_STATUS_ENUM] },
+          resolution: stringField({ maxLength: 2000 }),
+        },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "The updated report",
+          envelopeOf({ type: "object", properties: { report: reportDetailRef } }),
+        ),
+        ...errorResponses("401", "403", "404", "409", "422", "429"),
+      },
+    },
+  },
+
+  "/moderation/actions": {
+    post: {
+      tags: [MODERATION_TAG],
+      summary: "Record a moderation action",
+      description:
+        "The seven verbs the schema carries. Four are named by ARCHITECTURE " +
+        "§25 — `warning`, `content_removal`, `suspension` (temporary), and " +
+        "`ban` (permanent); the other three are `shadow_ban`, `unban`, and " +
+        "`reinstate`.\n\n" +
+        "**Rank decides who may act on whom.** A moderator may action members " +
+        "and verified builders, but not another moderator, a community admin, " +
+        "or a platform admin — and nobody may action themselves, which rules " +
+        "out self-ban and self-suspension. Refusals are 403 with one message " +
+        "for every case, so the endpoint cannot be used to map other users' " +
+        "roles.\n\n" +
+        "Account verbs take a `user` target; `content_removal` takes any " +
+        "other. Only `suspension` may carry `expiresAt`, and every " +
+        "`suspension` must — the schema documents a null expiry as permanent, " +
+        "so a suspension without one would be a ban wearing the wrong name.\n\n" +
+        "The mutation, the `ModerationAction` row, and the `AuditLog` row " +
+        "commit in **one transaction**: no action can land without its audit " +
+        "record. Content removal reuses each domain's existing `deletedAt` " +
+        "semantics, including its counter side-effects.\n\n" +
+        "`moderatorId` is taken from the access token and is stripped from the " +
+        "body if sent.",
+      security: [{ bearerAuth: [] }],
+      requestBody: requestBody({
+        type: "object",
+        required: ["action", "targetType", "targetId"],
+        properties: {
+          action: {
+            type: "string",
+            enum: [
+              "warning",
+              "content_removal",
+              "suspension",
+              "ban",
+              "shadow_ban",
+              "unban",
+              "reinstate",
+            ],
+          },
+          targetType: { type: "string", enum: [...REPORT_TARGET_ENUM] },
+          targetId: stringField({ format: "uuid" }),
+          reason: stringField({ maxLength: 1000, default: "" }),
+          expiresAt: stringField({
+            format: "date-time",
+            description: "Required for `suspension`, forbidden for every other verb.",
+          }),
+          reportId: stringField({ format: "uuid" }),
+        },
+      }),
+      responses: {
+        "201": jsonResponse(
+          "The recorded action",
+          envelopeOf({ $ref: "#/components/schemas/ModerationActionResult" }),
+        ),
+        ...errorResponses("400", "401", "403", "404", "422", "429"),
+      },
+    },
+  },
+};
+
+/* ── Admin paths (Phase 11) ─────────────────────────────────────────────── */
+
+const adminUserListResponse = {
+  allOf: [
+    { $ref: "#/components/schemas/SuccessEnvelope" },
+    {
+      type: "object",
+      required: ["pagination"],
+      properties: {
+        data: {
+          type: "array",
+          items: { $ref: "#/components/schemas/AdminUserSummary" },
+        },
+        pagination: { $ref: "#/components/schemas/Pagination" },
+      },
+    },
+  ],
+};
+
+const auditLogListResponse = {
+  allOf: [
+    { $ref: "#/components/schemas/SuccessEnvelope" },
+    {
+      type: "object",
+      required: ["pagination"],
+      properties: {
+        data: { type: "array", items: { $ref: "#/components/schemas/AuditLog" } },
+        pagination: { $ref: "#/components/schemas/Pagination" },
+      },
+    },
+  ],
+};
+
+const USER_ROLE_ENUM = [
+  "guest",
+  "member",
+  "verified_builder",
+  "moderator",
+  "community_admin",
+  "platform_admin",
+] as const;
+
+const MODERATION_STATUS_ENUM = ["active", "banned", "shadow_banned"] as const;
+
+const adminPaths: OpenApiObject = {
+  "/admin/users": {
+    get: {
+      tags: [ADMIN_TAG],
+      summary: "List accounts for user management",
+      description:
+        "Moderator, community admin, or platform admin. Newest account first, " +
+        "tie-broken by id so offset paging is stable. Soft-deleted accounts " +
+        "are excluded.\n\n" +
+        "**`email` is deliberately absent from the projection.** A paginated " +
+        "table of every account's address is a credential-stuffing target that " +
+        "no listed requirement asks for; an administrator who needs one opens " +
+        "that user's profile, where the existing `canSeeEmail` rule applies.\n\n" +
+        "There is no free-text search parameter — user search is Phase 10's " +
+        "surface and this is not it.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "role",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: [...USER_ROLE_ENUM] },
+        },
+        {
+          name: "status",
+          in: "query",
+          required: false,
+          schema: { type: "string", enum: [...MODERATION_STATUS_ENUM] },
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": jsonResponse("A page of accounts", adminUserListResponse),
+        ...errorResponses("401", "403", "422", "429"),
+      },
+    },
+  },
+
+  "/admin/users/{id}/role": {
+    patch: {
+      tags: [ADMIN_TAG],
+      summary: "Change a user's role",
+      description:
+        "**`platform_admin` only.** The most privileged write in the API, and " +
+        "the one place the backend is deliberately stricter than the shipped " +
+        "frontend: `user-row.tsx` renders a role selector containing " +
+        "`platform_admin` to every staff role, so mirroring it with " +
+        "`requireAdmin` would let any moderator promote themselves.\n\n" +
+        "Also refused: changing your own role, assigning `guest` (the " +
+        "not-signed-in sentinel, never a real role), and acting on an account " +
+        "whose role equals or outranks yours — which means no platform admin " +
+        "can promote or demote another platform admin.\n\n" +
+        "The write is guarded on the role the caller observed, so two " +
+        "simultaneous changes cannot silently overwrite one another (409). " +
+        "Audited as `ROLE_CHANGED` in the same transaction.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: stringField({ format: "uuid" }),
+        },
+      ],
+      requestBody: requestBody({
+        type: "object",
+        required: ["role"],
+        properties: { role: { type: "string", enum: [...USER_ROLE_ENUM] } },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "The updated account",
+          envelopeOf({
+            type: "object",
+            properties: { user: { $ref: "#/components/schemas/AdminUserSummary" } },
+          }),
+        ),
+        ...errorResponses("401", "403", "404", "409", "422", "429"),
+      },
+    },
+  },
+
+  "/admin/users/{id}/status": {
+    patch: {
+      tags: [ADMIN_TAG],
+      summary: "Change a user's moderation status",
+      description:
+        "Takes a *state* because that is what the shipped admin table sends, " +
+        "and translates it into the moderation verb that gets recorded: " +
+        "`banned` → `ban`, `shadow_banned` → `shadow_ban`, and `active` → " +
+        "`unban` or `reinstate` depending on what is being lifted.\n\n" +
+        "The restoration half of that mapping — `unban` for a ban or " +
+        "suspension, `reinstate` for a shadow ban — is an **implementation " +
+        "inference, not a specified requirement**. The shipped admin table " +
+        "sends one `Restore` action for both non-active statuses and names no " +
+        "verb, and no specification defines either member, so the server " +
+        "chooses. See `docs/MODERATION.md` for the sources checked.\n\n" +
+        "Delegates to the same transactional path `POST /moderation/actions` " +
+        "uses, so there is exactly one code path that writes `User.status` and " +
+        "it is the one that writes the audit row alongside it. The same rank " +
+        "rules apply, including the refusal to act on yourself.\n\n" +
+        "Setting the status an account already holds is a 409 — a moderation " +
+        "action that changed nothing is noise in a trail whose value comes " +
+        "from every row meaning something.\n\n" +
+        "There is no `expiresAt` here: a *temporary* suspension is a verb with " +
+        "its own requirements and is filed through `POST /moderation/actions`.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "id",
+          in: "path",
+          required: true,
+          schema: stringField({ format: "uuid" }),
+        },
+      ],
+      requestBody: requestBody({
+        type: "object",
+        required: ["status"],
+        properties: {
+          status: { type: "string", enum: [...MODERATION_STATUS_ENUM] },
+          reason: stringField({ maxLength: 1000, default: "" }),
+        },
+      }),
+      responses: {
+        "200": jsonResponse(
+          "The recorded action",
+          envelopeOf({ $ref: "#/components/schemas/ModerationActionResult" }),
+        ),
+        ...errorResponses("401", "403", "404", "409", "422", "429"),
+      },
+    },
+  },
+
+  "/admin/stats": {
+    get: {
+      tags: [ADMIN_TAG],
+      summary: "Platform overview counters",
+      description:
+        "The four counters the shipped Overview and Analytics pages render. " +
+        "Soft-deleted rows are excluded so the numbers describe live content.",
+      security: [{ bearerAuth: [] }],
+      responses: {
+        "200": jsonResponse(
+          "Platform statistics",
+          envelopeOf({ $ref: "#/components/schemas/AdminOverviewStats" }),
+        ),
+        ...errorResponses("401", "403", "429"),
+      },
+    },
+  },
+
+  "/admin/analytics/signups": {
+    get: {
+      tags: [ADMIN_TAG],
+      summary: "Weekly signup counts",
+      description:
+        "Eight weekly buckets ending with the current week, oldest first — the " +
+        "series the shipped growth chart plots. Buckets are half-open and " +
+        "aligned to UTC midnight, so a signup falls in exactly one bucket " +
+        "regardless of the deployment's timezone.\n\n" +
+        "Computed as eight indexed range counts on `users(createdAt)`, not raw " +
+        "SQL and not an in-memory bucketing of every recent signup.",
+      security: [{ bearerAuth: [] }],
+      responses: {
+        "200": jsonResponse(
+          "Weekly signups",
+          envelopeOf({
+            type: "object",
+            required: ["signups"],
+            properties: {
+              signups: {
+                type: "array",
+                items: { $ref: "#/components/schemas/WeeklySignup" },
+              },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "429"),
+      },
+    },
+  },
+
+  "/admin/analytics/reports-by-reason": {
+    get: {
+      tags: [ADMIN_TAG],
+      summary: "Report counts by reason",
+      description:
+        "Reasons with a zero count are omitted, matching the shipped chart's " +
+        "own filter — an empty bar renders as a label with no mark and reads " +
+        "as a rendering bug.",
+      security: [{ bearerAuth: [] }],
+      responses: {
+        "200": jsonResponse(
+          "Report counts by reason",
+          envelopeOf({
+            type: "object",
+            required: ["reasons"],
+            properties: {
+              reasons: {
+                type: "array",
+                items: { $ref: "#/components/schemas/ReportsByReason" },
+              },
+            },
+          }),
+        ),
+        ...errorResponses("401", "403", "429"),
+      },
+    },
+  },
+
+  "/admin/audit-logs": {
+    get: {
+      tags: [ADMIN_TAG],
+      summary: "Read the audit trail",
+      description:
+        "**`platform_admin` only.** The trail records every login, password " +
+        "change, role change, moderation action, IP address, and user agent on " +
+        "the platform — the single most sensitive read surface in the API. TRD " +
+        "§29 requires it not be editable by normal users; this restricts " +
+        "*reading* to the one role that needs it, so a moderator reviewing " +
+        "reports cannot pull the login history of the people they moderate.\n\n" +
+        "Newest first, tie-broken by id — a moderation action and its own " +
+        "audit record are frequently written in the same millisecond.\n\n" +
+        "There is **no write endpoint and no delete endpoint**, for any role. " +
+        "The table is append-only by design and the repository exposes an " +
+        "insert and two reads and nothing else.",
+      security: [{ bearerAuth: [] }],
+      parameters: [
+        {
+          name: "actorId",
+          in: "query",
+          required: false,
+          schema: stringField({ format: "uuid" }),
+        },
+        {
+          name: "action",
+          in: "query",
+          required: false,
+          description: "Exact match on the audited verb, e.g. `USER_BANNED`.",
+          schema: stringField({ minLength: 1, maxLength: 64 }),
+        },
+        {
+          name: "targetType",
+          in: "query",
+          required: false,
+          schema: {
+            type: "string",
+            enum: [
+              "user",
+              "post",
+              "comment",
+              "project",
+              "community",
+              "message",
+              "conversation",
+              "achievement",
+            ],
+          },
+        },
+        {
+          name: "targetId",
+          in: "query",
+          required: false,
+          schema: stringField({ format: "uuid" }),
+        },
+        {
+          name: "page",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, default: 1 },
+        },
+        {
+          name: "limit",
+          in: "query",
+          required: false,
+          schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        "200": jsonResponse("A page of audit records", auditLogListResponse),
+        ...errorResponses("401", "403", "422", "429"),
+      },
+    },
+  },
+};
+
 export const openApiDocument: OpenApiDocument = {
   openapi: "3.1.0",
   info: {
@@ -3036,6 +3637,8 @@ export const openApiDocument: OpenApiDocument = {
     { name: MESSAGE_READ_TAG, description: "Read watermarks and unread counts" },
     { name: NOTIFICATIONS_TAG, description: "In-app notifications and read state" },
     { name: SEARCH_TAG, description: "Cross-entity search over public content" },
+    { name: MODERATION_TAG, description: "Reports and moderation actions" },
+    { name: ADMIN_TAG, description: "User management, analytics, and the audit trail" },
   ],
   components: {
     securitySchemes: {
@@ -3800,6 +4403,277 @@ export const openApiDocument: OpenApiDocument = {
             minimum: 0,
             description: "Sum of the five visible group totals.",
           },
+        },
+      },
+
+      /**
+       * Moderation and administration projections (Phase 11).
+       *
+       * Deliberately narrower than the domain schemas they resemble.
+       * `ModerationUser` carries five fields and no `email`, `role`, or
+       * `status`; `AdminUserSummary` carries standing *beside* the person
+       * rather than inside them, so no other surface can start serving a role
+       * by reusing the person projection.
+       */
+      ModerationUser: {
+        type: "object",
+        required: ["id", "username", "displayName", "avatarUrl", "builderRank"],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          username: { type: "string" },
+          displayName: { type: "string" },
+          avatarUrl: { type: ["string", "null"] },
+          builderRank: { type: "string" },
+        },
+      },
+
+      Report: {
+        type: "object",
+        required: [
+          "id",
+          "reporterId",
+          "targetType",
+          "targetId",
+          "targetAuthorId",
+          "reason",
+          "details",
+          "status",
+          "reviewerId",
+          "resolution",
+          "resolvedAt",
+          "createdAt",
+        ],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          reporterId: stringField({ format: "uuid" }),
+          targetType: {
+            type: "string",
+            enum: ["user", "post", "comment", "project", "community", "message"],
+          },
+          targetId: stringField({ format: "uuid" }),
+          targetAuthorId: { type: ["string", "null"], format: "uuid" },
+          reason: {
+            type: "string",
+            enum: [
+              "spam",
+              "harassment",
+              "inappropriate_content",
+              "impersonation",
+              "other",
+            ],
+          },
+          details: { type: "string" },
+          status: {
+            type: "string",
+            enum: ["pending", "reviewing", "resolved", "dismissed"],
+          },
+          reviewerId: { type: ["string", "null"], format: "uuid" },
+          resolution: { type: ["string", "null"] },
+          resolvedAt: { type: ["string", "null"], format: "date-time" },
+          createdAt: stringField({ format: "date-time" }),
+        },
+      },
+
+      /**
+       * A report with its participants resolved.
+       *
+       * `targetSummary` is deliberately absent. The shipped frontend computes
+       * it client-side from its own caches; producing it here would mean the
+       * queue joining five content tables per page and projecting a snippet of
+       * a private project or a direct message into the response.
+       */
+      ReportDetail: {
+        allOf: [
+          { $ref: "#/components/schemas/Report" },
+          {
+            type: "object",
+            required: ["reporter", "targetAuthor"],
+            properties: {
+              reporter: {
+                oneOf: [
+                  { $ref: "#/components/schemas/ModerationUser" },
+                  { type: "null" },
+                ],
+              },
+              targetAuthor: {
+                oneOf: [
+                  { $ref: "#/components/schemas/ModerationUser" },
+                  { type: "null" },
+                ],
+              },
+            },
+          },
+        ],
+      },
+
+      ModerationAction: {
+        type: "object",
+        required: [
+          "id",
+          "moderatorId",
+          "action",
+          "targetType",
+          "targetId",
+          "targetUserId",
+          "reason",
+          "expiresAt",
+          "reportId",
+          "createdAt",
+        ],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          moderatorId: { type: ["string", "null"], format: "uuid" },
+          action: {
+            type: "string",
+            enum: [
+              "warning",
+              "content_removal",
+              "suspension",
+              "ban",
+              "shadow_ban",
+              "unban",
+              "reinstate",
+            ],
+          },
+          targetType: { type: "string" },
+          targetId: stringField({ format: "uuid" }),
+          targetUserId: { type: ["string", "null"], format: "uuid" },
+          reason: { type: "string" },
+          expiresAt: {
+            type: ["string", "null"],
+            format: "date-time",
+            description: "Set for a temporary suspension; null means permanent.",
+          },
+          reportId: { type: ["string", "null"], format: "uuid" },
+          createdAt: stringField({ format: "date-time" }),
+        },
+      },
+
+      /**
+       * `statusChanged` and `contentRemoved` are reported rather than assumed:
+       * a removal whose target was already deleted is a successful, idempotent
+       * no-op, and the caller should be able to tell.
+       */
+      ModerationActionResult: {
+        type: "object",
+        required: ["action", "statusChanged", "contentRemoved"],
+        properties: {
+          action: { $ref: "#/components/schemas/ModerationAction" },
+          statusChanged: { type: "boolean" },
+          contentRemoved: { type: "boolean" },
+        },
+      },
+
+      AdminUserSummary: {
+        type: "object",
+        required: [
+          "user",
+          "role",
+          "status",
+          "joinedAt",
+          "projectsCount",
+          "followersCount",
+        ],
+        properties: {
+          user: { $ref: "#/components/schemas/ModerationUser" },
+          role: {
+            type: "string",
+            enum: [
+              "guest",
+              "member",
+              "verified_builder",
+              "moderator",
+              "community_admin",
+              "platform_admin",
+            ],
+          },
+          status: { type: "string", enum: ["active", "banned", "shadow_banned"] },
+          joinedAt: stringField({ format: "date-time" }),
+          projectsCount: { type: "integer", minimum: 0 },
+          followersCount: { type: "integer", minimum: 0 },
+        },
+      },
+
+      AdminOverviewStats: {
+        type: "object",
+        required: [
+          "totalUsers",
+          "totalProjects",
+          "totalCommunities",
+          "pendingReportsCount",
+        ],
+        properties: {
+          totalUsers: { type: "integer", minimum: 0 },
+          totalProjects: { type: "integer", minimum: 0 },
+          totalCommunities: { type: "integer", minimum: 0 },
+          pendingReportsCount: { type: "integer", minimum: 0 },
+        },
+      },
+
+      WeeklySignup: {
+        type: "object",
+        required: ["weekLabel", "count"],
+        properties: {
+          weekLabel: stringField({ description: 'The bucket start, e.g. "Jun 9".' }),
+          count: { type: "integer", minimum: 0 },
+        },
+      },
+
+      ReportsByReason: {
+        type: "object",
+        required: ["reason", "count"],
+        properties: {
+          reason: { type: "string" },
+          count: { type: "integer", minimum: 0 },
+        },
+      },
+
+      /**
+       * One audit record. `platform_admin` only, which is why `ipAddress` and
+       * `userAgent` are served at all — they are the point of an audit trail.
+       * `metadata` passes through as stored; `utils/audit.ts` forbids
+       * credentials from reaching it, which is where that rule belongs.
+       */
+      AuditLog: {
+        type: "object",
+        required: [
+          "id",
+          "actorId",
+          "actor",
+          "action",
+          "targetType",
+          "targetId",
+          "metadata",
+          "ipAddress",
+          "userAgent",
+          "createdAt",
+        ],
+        properties: {
+          id: stringField({ format: "uuid" }),
+          actorId: { type: ["string", "null"], format: "uuid" },
+          actor: {
+            oneOf: [
+              {
+                type: "object",
+                required: ["id", "username", "displayName"],
+                properties: {
+                  id: stringField({ format: "uuid" }),
+                  username: { type: "string" },
+                  displayName: { type: "string" },
+                },
+              },
+              { type: "null" },
+            ],
+          },
+          action: stringField({ description: "Free-form verb, e.g. `USER_BANNED`." }),
+          targetType: { type: ["string", "null"] },
+          targetId: { type: ["string", "null"], format: "uuid" },
+          metadata: {
+            description: "Arbitrary detail recorded with the event. Never credentials.",
+          },
+          ipAddress: { type: ["string", "null"] },
+          userAgent: { type: ["string", "null"] },
+          createdAt: stringField({ format: "date-time" }),
         },
       },
 
@@ -4734,6 +5608,8 @@ export const openApiDocument: OpenApiDocument = {
     ...messagePaths,
     ...notificationPaths,
     ...searchPaths,
+    ...moderationPaths,
+    ...adminPaths,
   },
 };
 

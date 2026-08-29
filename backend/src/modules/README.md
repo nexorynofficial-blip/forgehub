@@ -51,10 +51,10 @@ BACKEND_ARCHITECTURE.md §38:
 | `messages`      | 8     | **done** — conversations, receipts, reactions      |
 | `notifications` | 9     | **done** — suppression, delivery, read state       |
 | `search`        | 10    | **done** — five entities, one endpoint, no ranking |
-| `achievements`  | 10    |                                                    |
-| `moderation`    | 11    |                                                    |
-| `admin`         | 11    |                                                    |
-| `uploads`       | 11    |                                                    |
+| `achievements`  | —     | unassigned by §38                                  |
+| `moderation`    | 11    | **done** — reports, actions, transactional audit   |
+| `admin`         | 11    | **done** — users, analytics, audit-log access      |
+| `uploads`       | —     | unassigned by §38                                  |
 | `ai`            | 12    |                                                    |
 
 Two deviations from TRD §4's module list, both deliberate:
@@ -146,6 +146,29 @@ knowing:
   `project.visibility.ts` mirrors its repository. The repository tests pin the
   two together on real rows so they cannot drift. See `docs/SEARCH.md`.
 
+## `moderation/` and `admin/`
+
+The Phase 11 pair. Two modules rather than one because `ARCHITECTURE.md` §29
+names two API roots, and keeping them apart is what lets role changes and audit
+reads be gated more tightly than the moderation queue. Four things worth
+knowing:
+
+- **This is where `requireAdmin` and `requirePlatformAdmin` come alive.** Both
+  were written in Phase 3 and mounted on no route until now; `auth-security`
+  exercised them against a throwaway router.
+- **Phase 11 is the first module with a 403.** `ARCHITECTURE.md` §18 requires
+  one for an authorization failure. Phases 5–10 answered visibility refusals
+  with 404 because there "may you see this?" and "does this exist?" are the
+  same question; here they are genuinely different and both are answered.
+- **Mutation and audit commit together.** `recordModerationAction` runs one
+  transaction over the status change, the `ModerationAction`, and the
+  `AuditLog`. There is exactly one code path that writes `User.status`, and
+  `/admin/users/:id/status` delegates to it rather than having a second.
+- **Rank, not a boolean, decides who may act on whom.** Everywhere else asks
+  `isAdminRole(role)`; moderation is the first surface where one privileged
+  user acts on another, so `moderation.access.ts` adds a total order over the
+  six roles. See `docs/MODERATION.md` and `docs/ADMIN.md`.
+
 ## Cross-module dependencies
 
 Modules may depend on those above them, never below:
@@ -176,6 +199,13 @@ search   ──►  posts       (reuses the exported `listVisibilityWhere`)
 search   ──►  communities (reuses the exported `listVisibilityWhere`)
                           (projects' equivalent is module-private, so that one
                            clause is re-expressed and pinned by tests)
+moderation ─►  posts, projects, communities, messages
+                          (soft-deletes their rows inside its own audit
+                           transaction, reproducing each domain's counter
+                           side-effects — none of their repositories accepts a
+                           transaction client)
+admin    ──►  moderation  (access rules, the transactional write, report counts)
+admin    ──►  repositories/audit
 (everything) ► ports/notification.port.ts
                           (follows, posts, projects, communities, and messages
                            raise events through the port — never by importing

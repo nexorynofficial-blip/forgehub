@@ -112,6 +112,7 @@ export async function createNotification(
   const decision = resolveDelivery({
     recipientId: input.recipientId,
     actorId: input.actorId,
+    type: input.type,
     blockedEitherWay,
     inAppEnabled,
     duplicateUnread,
@@ -216,6 +217,7 @@ export async function fanOutNotification(
       const decision = resolveDelivery({
         recipientId: id,
         actorId: input.actorId,
+        type: input.type,
         blockedEitherWay: blocked.has(id),
         inAppEnabled: preferences.get(id) ?? true,
         duplicateUnread: duplicates.has(id),

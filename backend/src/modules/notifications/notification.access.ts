@@ -35,6 +35,8 @@ import type { NotificationType } from "@prisma/client";
 export interface DeliveryContext {
   recipientId: string;
   actorId: string | null;
+  /** What kind of notification this is. Decides whether rules 3 and 4 apply. */
+  type: NotificationType;
   /** A `Block` exists in either direction between actor and recipient. */
   blockedEitherWay: boolean;
   /** The recipient's `inApp` flag for this type. Defaults to true upstream. */
@@ -44,6 +46,27 @@ export interface DeliveryContext {
    * list — same type, same actor, same target.
    */
   duplicateUnread: boolean;
+}
+
+/**
+ * Types that are delivered whatever the recipient's settings say (Phase 11,
+ * ruling R11).
+ *
+ * `moderation` alone. A warning, a suspension, a ban, and a content removal
+ * are outcomes a person is *entitled to be told about*, not activity updates
+ * they opted into — and a user who muted the type would otherwise discover
+ * their account was banned by failing to log in. ARCHITECTURE §25 makes the
+ * moderation flow end at the affected user for a reason.
+ *
+ * This does **not** bypass the self or block rules, and does not need to.
+ * Moderation notifications are raised with no actor at all (see
+ * `notification.port.ts`), so neither rule can apply to them in the first
+ * place — the guarantee is structural rather than a second exemption.
+ */
+export const UNSUPPRESSIBLE_TYPES: readonly NotificationType[] = ["moderation"];
+
+export function isUnsuppressible(type: NotificationType): boolean {
+  return UNSUPPRESSIBLE_TYPES.includes(type);
 }
 
 /**
@@ -70,6 +93,12 @@ export function resolveDelivery(context: DeliveryContext): DeliveryDecision {
       return { deliver: false, reason: "blocked" };
     }
   }
+
+  // Moderation outcomes are not optional reading. Placed after the self and
+  // block checks rather than before them so the exemption can only ever widen
+  // delivery to the *affected user*, never turn a notification back on for
+  // someone the recipient blocked.
+  if (isUnsuppressible(context.type)) return { deliver: true };
 
   if (!context.inAppEnabled) return { deliver: false, reason: "preference" };
   if (context.duplicateUnread) return { deliver: false, reason: "duplicate" };
@@ -124,6 +153,12 @@ export const NON_COLLAPSING_TYPES: readonly NotificationType[] = [
   "community_invite",
   "invite",
   "project_update",
+  // Phase 11. Each moderation action is a distinct decision, on the same
+  // reasoning as an invitation: two warnings collapsed into one would tell the
+  // recipient they had been warned once. `resolveDelivery` already exempts the
+  // type from collapse; this keeps the two rules from disagreeing if that
+  // exemption is ever narrowed.
+  "moderation",
 ];
 
 export function collapses(type: NotificationType): boolean {

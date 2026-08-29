@@ -34,6 +34,11 @@ import {
 const DELIVER: DeliveryContext = {
   recipientId: "recipient",
   actorId: "actor",
+  // Phase 11 added `type` to the context so `resolveDelivery` can exempt
+  // moderation from preference and collapse suppression. An ordinary,
+  // fully-suppressible type is the right default for this matrix; the
+  // moderation exemption is exercised on its own in the Phase 11 suites.
+  type: "like",
   blockedEitherWay: false,
   inAppEnabled: true,
   duplicateUnread: false,
@@ -177,6 +182,10 @@ describe("collapse policy", () => {
     expect([...NON_COLLAPSING_TYPES].sort()).toEqual([
       "community_invite",
       "invite",
+      // Phase 11: each moderation action is a distinct decision, on the same
+      // reasoning as an invitation. Two warnings collapsed into one would tell
+      // the recipient they had been warned once.
+      "moderation",
       "project_invite",
       "project_update",
     ]);

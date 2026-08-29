@@ -487,3 +487,249 @@ describe("OpenAPI document", () => {
     expect(documented.filter((event) => event.startsWith("search"))).toEqual([]);
   });
 });
+
+/* ── Phase 11: moderation and admin ─────────────────────────────────────── */
+
+describe("the Phase 11 contract", () => {
+  const paths = openApiDocument.paths as Record<string, Record<string, Json>>;
+  const components = openApiDocument.components as Record<string, unknown>;
+  const schemas = components["schemas"] as Record<string, Record<string, Json>>;
+
+  function operation(path: string, method: string): Record<string, Json> {
+    const entry = paths[path];
+    expect(entry, `missing path ${path}`).toBeDefined();
+    const op = entry![method] as Record<string, Json> | undefined;
+    expect(op, `missing ${method.toUpperCase()} ${path}`).toBeDefined();
+    return op!;
+  }
+
+  it("declares every moderation route and no others under /moderation", () => {
+    const moderation = Object.keys(paths).filter((path) =>
+      path.startsWith("/moderation"),
+    );
+
+    expect(moderation.sort()).toEqual([
+      "/moderation/actions",
+      "/moderation/reports",
+      "/moderation/reports/{id}",
+    ]);
+  });
+
+  it("declares every admin route and no others under /admin", () => {
+    const admin = Object.keys(paths).filter((path) => path.startsWith("/admin"));
+
+    expect(admin.sort()).toEqual([
+      "/admin/analytics/reports-by-reason",
+      "/admin/analytics/signups",
+      "/admin/audit-logs",
+      "/admin/stats",
+      "/admin/users",
+      "/admin/users/{id}/role",
+      "/admin/users/{id}/status",
+    ]);
+  });
+
+  it("declares the Phase 11 schemas", () => {
+    for (const name of [
+      "ModerationUser",
+      "Report",
+      "ReportDetail",
+      "ModerationAction",
+      "ModerationActionResult",
+      "AdminUserSummary",
+      "AdminOverviewStats",
+      "WeeklySignup",
+      "ReportsByReason",
+      "AuditLog",
+    ]) {
+      expect(schemas[name], `missing schema ${name}`).toBeDefined();
+    }
+  });
+
+  it("requires authentication on every Phase 11 operation", () => {
+    // Unlike search, nothing here has a public face: an unattributed report is
+    // not actionable and an anonymous queue would be a directory of everyone
+    // under review.
+    const operations: [string, string][] = [
+      ["/moderation/reports", "post"],
+      ["/moderation/reports", "get"],
+      ["/moderation/reports/{id}", "get"],
+      ["/moderation/reports/{id}", "patch"],
+      ["/moderation/actions", "post"],
+      ["/admin/users", "get"],
+      ["/admin/users/{id}/role", "patch"],
+      ["/admin/users/{id}/status", "patch"],
+      ["/admin/stats", "get"],
+      ["/admin/analytics/signups", "get"],
+      ["/admin/analytics/reports-by-reason", "get"],
+      ["/admin/audit-logs", "get"],
+    ];
+
+    for (const [path, method] of operations) {
+      const security = operation(path, method)["security"] as Json[];
+      expect(security, `${method} ${path} declares no security`).toEqual([
+        { bearerAuth: [] },
+      ]);
+    }
+  });
+
+  it("documents 401 and 403 on every staff-only operation", () => {
+    // ARCHITECTURE §18 requires 403 for an authorization failure, and Phase 11
+    // is the first phase that has one — Phases 5–10 answered visibility
+    // refusals with 404 instead.
+    const staffOnly: [string, string][] = [
+      ["/moderation/reports", "get"],
+      ["/moderation/reports/{id}", "get"],
+      ["/moderation/reports/{id}", "patch"],
+      ["/moderation/actions", "post"],
+      ["/admin/users", "get"],
+      ["/admin/users/{id}/role", "patch"],
+      ["/admin/users/{id}/status", "patch"],
+      ["/admin/stats", "get"],
+      ["/admin/audit-logs", "get"],
+    ];
+
+    for (const [path, method] of staffOnly) {
+      const responses = operation(path, method)["responses"] as Record<string, Json>;
+      expect(responses["401"], `${method} ${path} missing 401`).toBeDefined();
+      expect(responses["403"], `${method} ${path} missing 403`).toBeDefined();
+    }
+  });
+
+  it("documents 401 but not 403 on report filing", () => {
+    // Any authenticated user may file a report (PRD §17, §3), so there is no
+    // capability to be refused.
+    const responses = operation("/moderation/reports", "post")["responses"] as Record<
+      string,
+      Json
+    >;
+
+    expect(responses["401"]).toBeDefined();
+    expect(responses["403"]).toBeUndefined();
+    expect(responses["429"]).toBeDefined();
+  });
+
+  it("documents 409 wherever a state machine can refuse", () => {
+    for (const [path, method] of [
+      ["/moderation/reports/{id}", "patch"],
+      ["/admin/users/{id}/role", "patch"],
+      ["/admin/users/{id}/status", "patch"],
+    ] as [string, string][]) {
+      const responses = operation(path, method)["responses"] as Record<string, Json>;
+      expect(responses["409"], `${method} ${path} missing 409`).toBeDefined();
+    }
+  });
+
+  it("documents 404 on every operation that addresses one resource", () => {
+    for (const [path, method] of [
+      ["/moderation/reports/{id}", "get"],
+      ["/moderation/reports/{id}", "patch"],
+      ["/moderation/actions", "post"],
+      ["/admin/users/{id}/role", "patch"],
+      ["/admin/users/{id}/status", "patch"],
+    ] as [string, string][]) {
+      const responses = operation(path, method)["responses"] as Record<string, Json>;
+      expect(responses["404"], `${method} ${path} missing 404`).toBeDefined();
+    }
+  });
+
+  it("advertises the six report targets the schema carries, message included", () => {
+    const report = schemas["Report"] as unknown as {
+      properties: { targetType: { enum: string[] } };
+    };
+
+    expect(report.properties.targetType.enum.sort()).toEqual([
+      "comment",
+      "community",
+      "message",
+      "post",
+      "project",
+      "user",
+    ]);
+  });
+
+  it("advertises all four report states, reviewing included", () => {
+    const report = schemas["Report"] as unknown as {
+      properties: { status: { enum: string[] } };
+    };
+
+    // The shipped frontend union has three members and omits `reviewing`; the
+    // schema governs the backend contract.
+    expect(report.properties.status.enum).toContain("reviewing");
+    expect(report.properties.status.enum).toHaveLength(4);
+  });
+
+  it("advertises exactly the seven schema action verbs", () => {
+    const action = schemas["ModerationAction"] as unknown as {
+      properties: { action: { enum: string[] } };
+    };
+
+    expect(action.properties.action.enum.sort()).toEqual([
+      "ban",
+      "content_removal",
+      "reinstate",
+      "shadow_ban",
+      "suspension",
+      "unban",
+      "warning",
+    ]);
+  });
+
+  it("never exposes email, passwordHash, or status on a Phase 11 person", () => {
+    const person = schemas["ModerationUser"] as unknown as {
+      properties: Record<string, Json>;
+    };
+
+    expect(Object.keys(person.properties).sort()).toEqual([
+      "avatarUrl",
+      "builderRank",
+      "displayName",
+      "id",
+      "username",
+    ]);
+
+    // And the admin table's row keeps standing beside the person, not inside.
+    const summary = schemas["AdminUserSummary"] as unknown as {
+      properties: Record<string, Json>;
+    };
+    expect(Object.keys(summary.properties).sort()).toEqual([
+      "followersCount",
+      "joinedAt",
+      "projectsCount",
+      "role",
+      "status",
+      "user",
+    ]);
+    expect(summary.properties["email"]).toBeUndefined();
+  });
+
+  it("documents no audit-log write or delete operation", () => {
+    // TRD §29: the table is append-only. The contract must not advertise an
+    // editor that the code deliberately does not have.
+    const auditPath = paths["/admin/audit-logs"]!;
+    expect(Object.keys(auditPath).sort()).toEqual(["get"]);
+  });
+
+  it("declares no achievements, uploads, or AI path", () => {
+    // Phase 12+ boundaries, asserted so a stray path cannot appear unnoticed.
+    const declared = Object.keys(paths);
+    for (const prefix of ["/achievements", "/uploads", "/ai"]) {
+      expect(declared.filter((path) => path.startsWith(prefix))).toEqual([]);
+    }
+  });
+
+  it("adds no socket event for moderation or admin", () => {
+    // Neither ARCHITECTURE §14 nor TRD §19 lists one, so Phase 11 registers no
+    // handler and documents no event.
+    const documented = SOCKET_EVENTS.map((entry) => entry.event);
+    for (const prefix of ["moderation", "admin", "report", "ban"]) {
+      expect(documented.filter((event) => event.startsWith(prefix))).toEqual([]);
+    }
+  });
+
+  it("tags every Phase 11 operation", () => {
+    const tags = (openApiDocument.tags as { name: string }[]).map((tag) => tag.name);
+    expect(tags).toContain("Moderation");
+    expect(tags).toContain("Admin");
+  });
+});

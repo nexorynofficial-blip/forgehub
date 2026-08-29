@@ -1,8 +1,10 @@
 import { Router } from "express";
 
+import { createAdminRouter } from "../modules/admin/admin.routes.js";
 import { createAuthRouter } from "../modules/auth/auth.routes.js";
 import { createCommunityRouter } from "../modules/communities/communities.routes.js";
 import { createMessageRouter } from "../modules/messages/messages.routes.js";
+import { createModerationRouter } from "../modules/moderation/moderation.routes.js";
 import { createNotificationRouter } from "../modules/notifications/notifications.routes.js";
 import {
   createCommentRouter,
@@ -69,6 +71,15 @@ export function createV1Router(): Router {
   // rather than `requireAuth` — public content must be findable by anonymous
   // visitors, and a signed-in viewer only widens what *they* may discover.
   router.use("/search", createSearchRouter());
+  // Moderation (Phase 11). ARCHITECTURE §29 names `/moderation` and `/admin`
+  // as two separate roots and they stay separate: this is the report workflow,
+  // where filing is open to any authenticated user and everything else is
+  // staff-only.
+  router.use("/moderation", createModerationRouter());
+  // Administration (Phase 11). PRD §18's user management, analytics, and audit
+  // logs. Role changes and audit reads are `requirePlatformAdmin`; the rest is
+  // `requireAdmin` — the first production use of either guard.
+  router.use("/admin", createAdminRouter());
 
   return router;
 }

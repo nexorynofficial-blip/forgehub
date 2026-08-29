@@ -1,6 +1,9 @@
 import type { Request, RequestHandler } from "express";
 
-import { findActiveSessionWithUser } from "../modules/auth/auth.repository.js";
+import {
+  findActiveSessionWithUser,
+  liftExpiredSuspension,
+} from "../modules/auth/auth.repository.js";
 import { AppError } from "../utils/errors.js";
 import { verifyAccessToken } from "../utils/jwt.js";
 
@@ -52,7 +55,14 @@ async function authenticate(req: Request): Promise<void> {
 
   // Moderation state is re-read here, not taken from the token, so a ban
   // issued after the token was minted still takes effect (TRD §17).
-  if (active.user.status === "banned") {
+  //
+  // Phase 11 adds the other direction: a *temporary* suspension whose expiry
+  // has passed is lifted here, on the request that would otherwise have been
+  // refused (ruling R12). No scheduler is involved — the check costs one
+  // indexed query and only accounts already marked `banned` pay it.
+  const status = await liftExpiredSuspension(active.user.id, active.user.status);
+
+  if (status === "banned") {
     throw AppError.authorization("This account has been suspended");
   }
 
@@ -62,7 +72,7 @@ async function authenticate(req: Request): Promise<void> {
     username: active.user.username,
     displayName: active.user.displayName,
     role: active.user.role,
-    status: active.user.status,
+    status,
     emailVerified: active.user.emailVerified,
     sessionId: active.session.id,
   };
