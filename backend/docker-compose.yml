@@ -79,6 +79,10 @@ services:
       APP_URL: ${APP_URL:-http://localhost:3000}
       EMAIL_VERIFICATION_EXPIRES: ${EMAIL_VERIFICATION_EXPIRES:-24h}
       PASSWORD_RESET_EXPIRES: ${PASSWORD_RESET_EXPIRES:-1h}
+      # Phase 12 added AI_PROVIDER to `config/env.ts` but could not add it here
+      # — this file was frozen for that phase — so a containerised deployment
+      # always resolved the `local` default and could not select `disabled`.
+      AI_PROVIDER: ${AI_PROVIDER:-local}
       RATE_LIMIT_WINDOW_MS: ${RATE_LIMIT_WINDOW_MS:-60000}
       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-100}
       AUTH_RATE_LIMIT_WINDOW_MS: ${AUTH_RATE_LIMIT_WINDOW_MS:-900000}

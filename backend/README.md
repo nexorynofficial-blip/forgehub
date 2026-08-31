@@ -174,6 +174,7 @@ backend/
     ADMIN.md                    Users, role boundary, analytics, audit-log access
     AI.md                       The provider abstraction, capabilities, why no endpoint
     TESTING.md                  Phase 13 audit, the cursor defect, debt register
+    DEPLOYMENT.md               Running it: env, Docker, migrations, health, shutdown
 ```
 
 Business logic lives in module services, database access in module
@@ -273,6 +274,16 @@ non-root `node` user.
 Both build stages use `npm ci --ignore-scripts`, which is why the password
 hasher is `@node-rs/argon2` (prebuilt NAPI binaries) rather than a node-gyp
 module that would need a postinstall step.
+
+The image bind-mounts no source, so **a code change needs a rebuild**:
+`docker compose build backend && docker compose up -d backend`. Neither
+command touches the volumes.
+
+Note that Compose passes `NODE_ENV=${NODE_ENV:-development}`, which overrides
+the `production` baked into the image — set `NODE_ENV=production` in `.env`
+before running this anywhere real. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+for environment variables, the migration mechanism, health and readiness,
+shutdown behaviour, and the known operational limitations.
 
 ## Testing
 
