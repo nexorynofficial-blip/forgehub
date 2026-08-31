@@ -320,9 +320,6 @@ Neither command touches the volumes or the database.
 - **Migrations are manual.** Deliberate, so multiple instances cannot race —
   but it does mean a rollout that forgets `prisma migrate deploy` starts against
   an old schema.
-- **One rate-limit counter.** All limiters share the Redis prefix `rl:`
-  (Phase 2 debt, documented in `MODERATION.md` and `SEARCH.md`), so a burst
-  against one endpoint family consumes budget for the others.
 - **No background workers.** §36 lists them as optional; `src/jobs/` is empty
   and nothing is queued.
 - **Email does not leave the process.** `EMAIL_PROVIDER=console` is the only

@@ -187,6 +187,12 @@ noticing debt is not a licence to change it.
 | 4   | Flaky `auth-unit` tampered-ciphertext test          | **Yes** — `auth-unit.test.ts:345` still builds `` `A${data.slice(1)}` ``        | Low           | **No.** Pre-existing Phase 3 debt, measured at ~1.57% (47/3000), untouched by Phase 13.                                                                                                     |
 | 5   | `AI_PROVIDER` not forwarded by `docker-compose.yml` | **Yes** — compose forwards `EMAIL_PROVIDER` but not `AI_PROVIDER`               | Low           | **No.** `docker-compose.yml` is a frozen path. The default (`local`) is safe; the consequence is that a containerised deployment cannot select `disabled`.                                  |
 
+> **Later resolution.** The table above records Phase 13's ruling and is left as
+> written. Three of the five have since been fixed by the phase that owned them:
+> **5** in Phase 14 (deployment owns Compose), and **1** and **4** in Phase 15
+> (final optimization owns cross-cutting middleware and test quality). **2** and
+> **3** stand as classified — see the Phase 15 report.
+
 ## Audits that found nothing
 
 Reported because a clean result is a finding, and because "we looked" is worth
@@ -227,15 +233,15 @@ Recorded rather than acted on, each because acting would exceed Phase 13.
 
 ## Remaining production risks
 
-1. **Rate limiting is one shared counter** (debt 1). Under a real load
-   profile, a burst against one endpoint family consumes budget for others.
+1. ~~**Rate limiting is one shared counter**~~ (debt 1) — **fixed in Phase 15**;
+   each limiter now has its own Redis namespace, counter, and window.
 2. **Shadow ban is recorded but not enforced** — Phase 11 ruling R3, unchanged.
 3. **No background jobs** — Phase 12 recorded this; every AI call, were one
    wired, would be synchronous.
 4. **Search is a sequential scan** and will degrade with row count long before
    anything else does.
-5. **One flaky test** (debt 4) will occasionally redden a clean run. Re-run
-   before investigating.
+5. ~~**One flaky test**~~ (debt 4) — **fixed in Phase 15**; the tampered-payload
+   test now always alters the ciphertext, so a red run is a real regression.
 
 ## Validation
 

@@ -345,7 +345,14 @@ describe("Secret encryption", () => {
   it("refuses to decrypt a tampered payload", () => {
     const payload = encryptSecret("JBSWY3DPEHPK3PXP");
     const [version, iv, tag, data] = payload.split(".");
-    const flipped = data === undefined ? "" : `A${data.slice(1)}`;
+    // Substitute a character the original is not, rather than a fixed "A".
+    // Hardcoding "A" left the ciphertext untouched whenever it already began
+    // with one — roughly 1 run in 64 over the base64url alphabet — and the
+    // assertion then passed vacuously against valid input instead of proving
+    // that GCM rejects a tampered payload.
+    const first = data?.charAt(0) ?? "";
+    const flipped =
+      data === undefined ? "" : `${first === "A" ? "B" : "A"}${data.slice(1)}`;
 
     expect(() => decryptSecret([version, iv, tag, flipped].join("."))).toThrow();
     expect(() => decryptSecret("garbage")).toThrow();

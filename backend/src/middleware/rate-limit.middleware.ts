@@ -16,7 +16,39 @@ import { errorResponse } from "../utils/response.js";
  * let an attacker reset their budget by hitting a different replica.
  */
 
-function createStore(): Options["store"] | undefined {
+/**
+ * Redis key prefix for one limiter.
+ *
+ * Every limiter used to share the literal prefix `rl:`, and `express-rate-limit`
+ * keys on the client IP, so all four limiters incremented **one** counter —
+ * `rl:<ip>`. Two consequences followed, both measured against a live Redis:
+ *
+ *  1. *Shared budget.* A request passing through the global limiter and a route
+ *     limiter counted **twice**, and traffic to unrelated endpoints spent the
+ *     credential limiter's allowance. Three searches left the shared key at 6.
+ *  2. *Collapsed window.* `rate-limit-redis` sets the TTL when it creates the
+ *     key, so whichever limiter arrived first fixed the window for all of them.
+ *     A login observed a TTL of 58s — the global limiter's 60s window — not the
+ *     900s `AUTH_RATE_LIMIT_WINDOW_MS` configures. That is the security-relevant
+ *     half: it multiplies the credential-guessing rate the design allows.
+ *
+ * BACKEND_ARCHITECTURE.md §28 requires *stricter* limits on login, registration
+ * and search and *more generous* limits on ordinary authenticated requests. One
+ * shared counter cannot express both at once — the tightest budget and the
+ * shortest window win for everything — so the shared prefix did not merely blur
+ * the limiters, it made the specified policy unimplementable.
+ *
+ * Namespacing by `name` gives each limiter its own counter and its own TTL.
+ * `tests/auth-rate-limit.test.ts` already assumed exactly this: it raises
+ * `RATE_LIMIT_MAX` to 100000 to push the global limiter "out of the way" so only
+ * the credential limiter can answer 429. That isolation was real under the
+ * in-memory test store and absent in production; this closes the gap.
+ */
+export function rateLimiterKeyPrefix(name: string): string {
+  return `rl:${name}:`;
+}
+
+function createStore(name: string): Options["store"] | undefined {
   // Tests run without Redis; the memory store keeps them hermetic.
   if (isTest) return undefined;
 
@@ -25,7 +57,7 @@ function createStore(): Options["store"] | undefined {
     // flat string[], so the command is split off the front explicitly.
     sendCommand: (command: string, ...args: string[]) =>
       redis.call(command, ...args) as Promise<never>,
-    prefix: "rl:",
+    prefix: rateLimiterKeyPrefix(name),
   });
 }
 
@@ -46,7 +78,7 @@ export function createRateLimiter({
   max,
   name,
 }: LimiterConfig): RequestHandler {
-  const store = createStore();
+  const store = createStore(name);
 
   return rateLimit({
     windowMs: windowMs ?? env.RATE_LIMIT_WINDOW_MS,

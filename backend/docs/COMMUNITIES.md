@@ -370,12 +370,15 @@ else.
 
 ---
 
-## 13. Known pre-existing issue
+## 13. Known pre-existing issue — resolved in Phase 15
 
-Not introduced by Phase 7 and not fixed here, but worth recording where someone
-will find it: **the global rate limiter and the credential limiter share one
-Redis key.** Both use `express-rate-limit`'s default IP key under the `rl:`
-prefix, so ordinary API traffic consumes the strict auth budget — 25 anonymous
-requests can cause the next login to 429. It is invisible to the test suite
-because `isTest` swaps in the in-memory store, giving each limiter its own
-counter. It only manifests with Redis.
+Recorded here because this is where someone will look for it: **the global rate
+limiter and the credential limiter shared one Redis key.** Both used
+`express-rate-limit`'s default IP key under the `rl:` prefix, so ordinary API
+traffic consumed the strict auth budget — the estimate below was 25 anonymous
+requests; the measured figure was 22. It was invisible to the test suite because
+`isTest` swaps in the in-memory store, giving each limiter its own counter, and
+it only manifested with Redis.
+
+Phase 15 namespaced the Redis store per limiter (`rl:<name>:`), so each limiter
+now has its own counter and its own window. See `rate-limit.middleware.ts`.

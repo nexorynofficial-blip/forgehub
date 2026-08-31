@@ -274,10 +274,6 @@ with its own audit insert, on the same all-or-nothing terms.
 
 - **No user search on the admin table**, above.
 - **No community or project administration**, above.
-- **The `rl:` rate-limiter prefix collision** (Phase 2) affects every limiter in
-  the API, including any that guards these routes. Documented in
-  [MODERATION.md](MODERATION.md#known-limitation-the-rl-prefix-collision) and
-  deliberately not fixed.
 - **Analytics are computed per request.** No caching, by design. The counts are
   indexed and the page loads once; if this ever becomes hot, `ARCHITECTURE.md`
   §20 is where the decision to cache belongs.

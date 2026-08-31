@@ -51,6 +51,11 @@ vi.mock("../src/config/redis.js", () => ({
 }));
 
 const { createApp } = await import("../src/app.js");
+// Dynamic, like `createApp` above: a static import is hoisted ahead of the
+// `process.env` assignments at the top of this file and would freeze the
+// wrong config into `config/env`.
+const { rateLimiterKeyPrefix } =
+  await import("../src/middleware/rate-limit.middleware.js");
 
 /** Separate instances: the in-memory store is created per `createApp()`. */
 const rateLimitApp = createApp();
@@ -111,5 +116,43 @@ describe("Credential rate limiting", () => {
     await request(rateLimitApp).get("/api/v1").expect(200);
     await request(rateLimitApp).get("/health").expect(200);
     await request(rateLimitApp).get("/ready").expect(200);
+  });
+});
+
+/**
+ * Regression guard for the shared Redis key namespace fixed in Phase 15.
+ *
+ * Not reachable through HTTP: `isTest` swaps the Redis store for the in-memory
+ * one, which is per-limiter and therefore already isolated. The collision only
+ * ever existed in the Redis store's key prefix, so that is what is asserted —
+ * directly, on the pure function that builds it.
+ *
+ * What it prevents: restoring a single shared constant. With one prefix, all
+ * limiters incremented `rl:<ip>`, and against a live Redis 22 ordinary
+ * `GET /api/v1/` requests were enough to make the next login answer 429 while
+ * the global budget still had 76 requests to spare.
+ */
+describe("rate limiter key namespace", () => {
+  /** The names `app.ts` and the four route modules actually construct. */
+  const LIMITER_NAMES = ["global", "auth-credentials", "search", "moderation-report"];
+
+  it("gives every limiter a distinct Redis key prefix", () => {
+    const prefixes = LIMITER_NAMES.map(rateLimiterKeyPrefix);
+
+    expect(new Set(prefixes).size).toBe(LIMITER_NAMES.length);
+  });
+
+  it("keys on the limiter name, not a shared constant", () => {
+    // The exact failure mode: every prefix collapsing to the same literal.
+    expect(rateLimiterKeyPrefix("global")).not.toBe(
+      rateLimiterKeyPrefix("auth-credentials"),
+    );
+    expect(rateLimiterKeyPrefix("auth-credentials")).toContain("auth-credentials");
+  });
+
+  it("stays under the rl: namespace so operational tooling still finds counters", () => {
+    for (const name of LIMITER_NAMES) {
+      expect(rateLimiterKeyPrefix(name)).toMatch(/^rl:/);
+    }
   });
 });

@@ -376,36 +376,34 @@ this is **10 reports a minute** — a tenth rather than search's three tenths,
 because search is expensive per call and a human makes many, while reporting is
 cheap per call and a human makes very few.
 
-### Known limitation: the `rl:` prefix collision
+### Known limitation: the `rl:` prefix collision — fixed in Phase 15
 
-**Pre-existing, from Phase 2, deliberately not fixed here.**
+**Pre-existing, from Phase 2; out of scope for Phase 11, resolved in Phase 15.**
 
-`rate-limit.middleware.ts` gives every limiter the same Redis key prefix, `rl:`,
-and `express-rate-limit` keys on the client IP. The limiter `name` reaches the
-log line and nothing else, so this limiter _shares a counter_ with the global
+`rate-limit.middleware.ts` gave every limiter the same Redis key prefix, `rl:`,
+and `express-rate-limit` keys on the client IP. The limiter `name` reached the
+log line and nothing else, so this limiter _shared a counter_ with the global
 `/api` limiter, with `auth-credentials`, and with Phase 10's `search` limiter
-for the same IP. The tightest budget wins for all of them, and requests to
-unrelated endpoints consume this one's allowance.
+for the same IP. The tightest budget won for all of them, and requests to
+unrelated endpoints consumed this one's allowance.
 
-Fixing it means editing a previous-phase middleware this phase may not touch. It
-is recorded here and at the construction site so the limiter's real behaviour is
-not mistaken for its declared behaviour.
+Phase 15 namespaced the Redis store per limiter (`rl:<name>:`), giving each its
+own counter and its own window. The report limiter's budget below is now
+independent of the rest of the API.
 
 ## Known limitations
 
-- **The `rl:` collision**, above.
 - **`unban` vs `reinstate`** is an implementation inference, above.
-- **A pre-existing flaky test, deliberately not fixed here.**
-  `tests/auth-unit.test.ts` → _"refuses to decrypt a tampered payload"_ fails
-  roughly **1 run in 64**. It tampers with a ciphertext by overwriting the first
-  base64url character with `"A"`, so whenever that character is _already_ `"A"`
-  the payload is unchanged and `decryptSecret` correctly does not throw. The
+- **A pre-existing flaky test — fixed in Phase 15.**
+  `tests/auth-unit.test.ts` → _"refuses to decrypt a tampered payload"_ failed
+  roughly **1 run in 64**. It tampered with a ciphertext by overwriting the first
+  base64url character with `"A"`, so whenever that character was _already_ `"A"`
+  the payload was unchanged and `decryptSecret` correctly did not throw. The
   rate was measured, not estimated: **47 failures in 3000 encryptions (1.57%)**,
-  matching the 1-in-64 prediction for a uniform base64url alphabet. It is Phase
-  3 code, untouched by Phase 11 — `git diff` against that file is empty — and it
-  is recorded here rather than fixed because this phase does not own it. A red
-  run on that one test is this, not a Phase 11 regression; re-run before
-  investigating.
+  matching the 1-in-64 prediction for a uniform base64url alphabet. It was Phase
+  3 code and out of scope for Phase 11. Phase 15 made the substitution depend on
+  the original character, so the ciphertext always changes — a test-only fix
+  that leaves the production crypto untouched.
 - **Shadow ban is recorded but not enforced.** Ruling R3 keeps Phase 6/7/10
   read paths untouched, so a `shadow_banned` user's posts, projects, and search
   results are still visible. The status, the action, and the audit row are all

@@ -348,20 +348,21 @@ throughput. A deployment that tunes the global limit moves search with it
 instead of leaving it pinned to a constant that silently drifts out of
 proportion. No new environment variable was required.
 
-### Known defect, deliberately not fixed (ruling D13)
+### Known defect (ruling D13) — fixed in Phase 15
 
-`rate-limit.middleware.ts` gives **every** limiter the same Redis key prefix,
-`rl:`, and `express-rate-limit` keys on the client IP. The `name` passed to
-`createRateLimiter` reaches the log line and nothing else.
+`rate-limit.middleware.ts` gave **every** limiter the same Redis key prefix,
+`rl:`, and `express-rate-limit` keys on the client IP, so the `name` passed to
+`createRateLimiter` reached the log line and nothing else.
 
-The search limiter therefore **shares a counter** with the global `/api` limiter
-and with `auth-credentials` for the same IP: the tightest budget wins for all of
-them, and requests to unrelated endpoints consume search's allowance.
+The search limiter therefore **shared a counter** with the global `/api` limiter
+and with `auth-credentials` for the same IP: the tightest budget won for all of
+them, requests to unrelated endpoints consumed search's allowance, and the first
+limiter to create the key fixed the window for the rest.
 
-This defect dates from Phase 2. Fixing it means editing a previous-phase
-middleware that Phase 10 may not touch, so it is recorded rather than repaired —
-here and at the limiter's construction site — so the limiter's real behaviour is
-not mistaken for its declared behaviour.
+The defect dated from Phase 2 and was out of scope for Phase 10, which could not
+edit a previous-phase middleware. Phase 15 — the final cross-cutting hardening
+phase — namespaced the store per limiter (`rl:<name>:`). The budgets described
+above are now the budgets that actually apply.
 
 ---
 
@@ -399,7 +400,7 @@ asserts that no `search*` event exists.
 | D10 | Free-text tags           | Not implemented. Tags remain curated taxonomy.                                                                                                                             |
 | D11 | Query validation         | Non-empty trimmed term required; whitespace-only and wildcard-only rejected. No autocomplete or fuzzy matching.                                                            |
 | D12 | Caching                  | None.                                                                                                                                                                      |
-| D13 | Rate limiting            | Stricter limiter added; the `rl:` prefix collision documented, not fixed.                                                                                                  |
+| D13 | Rate limiting            | Stricter limiter added; the `rl:` prefix collision documented here and fixed in Phase 15.                                                                                  |
 | D14 | Response shape           | Grouped, all five keys always present, projection-safe.                                                                                                                    |
 
 ---
@@ -443,7 +444,5 @@ asserts that no `search*` event exists.
    already make. Raising the ceiling needs a GIN index, which needs a migration,
    which is a decision above this phase.
 2. **LIKE wildcards in a term over-match**, as described above.
-3. **The search rate limiter shares the `rl:` key space** with every other
-   limiter — pre-existing Phase 2 debt, documented and untouched.
-4. **`Profile` carries no index**, yet `Profile.visibility` gates user search.
+3. **`Profile` carries no index**, yet `Profile.visibility` gates user search.
    Adding one is a migration.

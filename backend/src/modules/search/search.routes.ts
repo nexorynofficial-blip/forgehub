@@ -76,19 +76,15 @@ export function createSearchRouter(): Router {
   const router = Router();
 
   /*
-   * KNOWN PRE-EXISTING DEFECT, deliberately not fixed here (ruling D13).
+   * The `name` below is load-bearing, not decorative.
    *
-   * `rate-limit.middleware.ts` gives every limiter the same Redis key prefix,
-   * `rl:`, and `express-rate-limit` keys on the client IP. The `name` below
-   * reaches the log line and nothing else, so this limiter *shares a counter*
-   * with the global `/api` limiter and with `auth-credentials` for the same
-   * IP — the tighter budget wins for every one of them, and requests to
-   * unrelated endpoints consume this one's allowance.
-   *
-   * The defect dates from Phase 2 and is out of scope for Phase 10; fixing it
-   * means editing a previous-phase middleware that this phase may not touch.
-   * It is recorded here, and in `docs/SEARCH.md`, so the limiter's real
-   * behaviour is not mistaken for its declared behaviour.
+   * Until Phase 15 every limiter shared the Redis key prefix `rl:`, and
+   * `express-rate-limit` keys on the client IP, so this limiter shared one
+   * counter with the global `/api` limiter and with `auth-credentials`:
+   * requests to unrelated endpoints consumed this one's allowance, and the
+   * first limiter to create the key fixed the window for all of them.
+   * `rate-limit.middleware.ts` now namespaces the store by `name`, which is
+   * what gives this limiter the independent budget the numbers below describe.
    */
   const searchLimiter = createRateLimiter({
     name: "search",
