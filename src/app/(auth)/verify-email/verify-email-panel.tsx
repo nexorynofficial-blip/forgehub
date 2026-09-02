@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Loader2, Mail } from "lucide-react";
 
 import { routes } from "@/lib/routes";
+import { apiErrorMessage } from "@/lib/api";
 import { resendVerificationEmail } from "@/lib/services/auth-service";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -24,11 +25,29 @@ export function VerifyEmailPanel({ email }: { email?: string }) {
   }, [cooldown]);
 
   async function handleResend() {
+    if (!email) {
+      toast({
+        variant: "danger",
+        title: "No address to send to",
+        description: "Head back to sign-in and start again.",
+      });
+      return;
+    }
+
     setIsResending(true);
-    await resendVerificationEmail(email ?? "");
-    setIsResending(false);
-    setCooldown(RESEND_COOLDOWN_SECONDS);
-    toast({ title: "Email sent", description: "Check your inbox (and spam folder)." });
+    try {
+      await resendVerificationEmail(email);
+      setCooldown(RESEND_COOLDOWN_SECONDS);
+      toast({ title: "Email sent", description: "Check your inbox (and spam folder)." });
+    } catch (error) {
+      toast({
+        variant: "danger",
+        title: "Could not resend the email",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    } finally {
+      setIsResending(false);
+    }
   }
 
   return (

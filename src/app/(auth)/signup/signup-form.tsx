@@ -7,7 +7,8 @@ import { Controller, useForm, useWatch } from "react-hook-form";
 import { Loader2 } from "lucide-react";
 
 import { routes } from "@/lib/routes";
-import { signup } from "@/lib/services/auth-service";
+import { apiErrorMessage, applyApiFieldErrors } from "@/lib/api";
+import { useAuth } from "@/providers/auth-provider";
 import { signupSchema, type SignupValues } from "@/lib/validations/auth";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -23,10 +24,12 @@ import { PasswordStrengthMeter } from "@/components/auth/password-strength-meter
 export function SignupForm() {
   const router = useRouter();
   const toast = useToast((state) => state.toast);
+  const { signup } = useAuth();
   const {
     register,
     control,
     handleSubmit,
+    setError,
     formState: { errors, isSubmitting },
   } = useForm<SignupValues>({
     resolver: zodResolver(signupSchema),
@@ -42,12 +45,34 @@ export function SignupForm() {
   const password = useWatch({ control, name: "password" });
 
   async function onSubmit(values: SignupValues) {
-    await signup(values);
-    toast({
-      title: "Account created",
-      description: "Next up: verify your email.",
-    });
-    router.push(`${routes.auth.verifyEmail}?email=${encodeURIComponent(values.email)}`);
+    try {
+      // Registration never signs the user in: the backend answers with
+      // `verificationRequired` and no token, so the next stop is verification.
+      await signup(values);
+      toast({
+        title: "Account created",
+        description: "Next up: verify your email.",
+      });
+      router.push(`${routes.auth.verifyEmail}?email=${encodeURIComponent(values.email)}`);
+    } catch (error) {
+      if (
+        applyApiFieldErrors(error, setError, [
+          "displayName",
+          "email",
+          "password",
+          "confirmPassword",
+          "agreeToTerms",
+        ])
+      ) {
+        return;
+      }
+
+      toast({
+        variant: "danger",
+        title: "Could not create your account",
+        description: apiErrorMessage(error, "Please check your details and try again."),
+      });
+    }
   }
 
   return (

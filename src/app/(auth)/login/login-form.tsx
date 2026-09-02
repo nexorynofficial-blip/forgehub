@@ -7,7 +7,8 @@ import { Controller, useForm } from "react-hook-form";
 import { Loader2 } from "lucide-react";
 
 import { routes } from "@/lib/routes";
-import { login } from "@/lib/services/auth-service";
+import { apiErrorMessage, applyApiFieldErrors } from "@/lib/api";
+import { useAuth } from "@/providers/auth-provider";
 import { loginSchema, type LoginValues } from "@/lib/validations/auth";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -22,10 +23,12 @@ import { PasswordInput } from "@/components/auth/password-input";
 export function LoginForm() {
   const router = useRouter();
   const toast = useToast((state) => state.toast);
+  const { login } = useAuth();
   const {
     register,
     control,
     handleSubmit,
+    setError,
     formState: { errors, isSubmitting },
   } = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
@@ -33,9 +36,29 @@ export function LoginForm() {
   });
 
   async function onSubmit(values: LoginValues) {
-    await login(values);
-    toast({ title: "Welcome back", description: "Signed in successfully." });
-    router.push(routes.dashboard);
+    try {
+      const result = await login(values);
+
+      // Two-factor accounts are not signed in yet — the challenge cookie is
+      // set and the existing /2fa screen finishes the job.
+      if (result.status === "two_factor_required") {
+        router.push(routes.auth.twoFactor);
+        return;
+      }
+
+      toast({ title: "Welcome back", description: "Signed in successfully." });
+      router.push(routes.dashboard);
+    } catch (error) {
+      // A 422 puts its messages on the fields that caused them; anything else
+      // is a whole-form condition (bad credentials, banned, rate limited).
+      if (applyApiFieldErrors(error, setError, ["email", "password"])) return;
+
+      toast({
+        variant: "danger",
+        title: "Sign in failed",
+        description: apiErrorMessage(error, "Please check your details and try again."),
+      });
+    }
   }
 
   return (

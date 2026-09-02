@@ -7,19 +7,23 @@ import { useForm } from "react-hook-form";
 import { Loader2, MailCheck } from "lucide-react";
 
 import { routes } from "@/lib/routes";
+import { apiErrorMessage, applyApiFieldErrors } from "@/lib/api";
 import { requestPasswordReset } from "@/lib/services/auth-service";
 import { forgotPasswordSchema, type ForgotPasswordValues } from "@/lib/validations/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
 import { AuthHeading } from "@/components/auth/auth-heading";
 import { FadeIn } from "@/components/motion/fade-in";
 
 export function ForgotPasswordForm() {
   const [sentTo, setSentTo] = useState<string | null>(null);
+  const toast = useToast((state) => state.toast);
   const {
     register,
     handleSubmit,
+    setError,
     formState: { errors, isSubmitting },
   } = useForm<ForgotPasswordValues>({
     resolver: zodResolver(forgotPasswordSchema),
@@ -27,8 +31,20 @@ export function ForgotPasswordForm() {
   });
 
   async function onSubmit(values: ForgotPasswordValues) {
-    await requestPasswordReset(values.email);
-    setSentTo(values.email);
+    try {
+      // The backend answers identically for known and unknown addresses, so
+      // the confirmation panel below is truthful either way.
+      await requestPasswordReset(values.email);
+      setSentTo(values.email);
+    } catch (error) {
+      if (applyApiFieldErrors(error, setError, ["email"])) return;
+
+      toast({
+        variant: "danger",
+        title: "Could not send the reset link",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    }
   }
 
   if (sentTo) {

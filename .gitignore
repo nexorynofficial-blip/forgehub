@@ -42,6 +42,10 @@ yarn-error.log*
 # re-includes `backend/.env.example` with a negation so the template stays
 # committable while every real `.env` remains ignored.
 .env*
+# Same reasoning for the frontend's own template: `.env.example` documents the
+# `NEXT_PUBLIC_*` URLs and holds no secret, so it is committed while
+# `.env.local` and every other real env file stay ignored.
+!.env.example
 
 # vercel
 .vercel
