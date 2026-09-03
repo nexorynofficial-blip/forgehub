@@ -260,7 +260,21 @@ describe("Production environment validation", () => {
   });
 
   it("accepts production and derives production defaults", () => {
-    const parsed = parseEnv({ ...validEnv(), NODE_ENV: "production" });
+    /*
+     * The email configuration is supplied because production now requires a
+     * transport that can actually send: `console` refuses to print there, so
+     * selecting it would drop every verification and reset message silently.
+     * `config/env.ts` refuses that combination outright, and
+     * `email-unit.test.ts` is where that rule is asserted. This test is about
+     * NODE_ENV and cookie derivation, so it just satisfies the rule.
+     */
+    const parsed = parseEnv({
+      ...validEnv(),
+      NODE_ENV: "production",
+      EMAIL_PROVIDER: "resend",
+      RESEND_API_KEY: "re_deployment_test_key_not_a_real_credential",
+      EMAIL_FROM: "ForgeHub <no-reply@mail.example.test>",
+    });
 
     expect(parsed.NODE_ENV).toBe("production");
     // Unset rather than false: `config/cookies.ts` reads

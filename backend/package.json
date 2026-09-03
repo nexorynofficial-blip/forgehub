@@ -19,6 +19,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:seed": "prisma db seed",
+    "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "db:reset": "prisma migrate reset",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",

@@ -76,6 +76,10 @@ services:
       COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
       EMAIL_PROVIDER: ${EMAIL_PROVIDER:-console}
       EMAIL_FROM: ${EMAIL_FROM:-ForgeHub <no-reply@forgehub.dev>}
+      # No inline default: a shared fallback credential is worse than none.
+      # Unset resolves to the empty string, which config/env.ts reads as
+      # "not configured" — so this line is inert until you select resend.
+      RESEND_API_KEY: ${RESEND_API_KEY}
       APP_URL: ${APP_URL:-http://localhost:3000}
       EMAIL_VERIFICATION_EXPIRES: ${EMAIL_VERIFICATION_EXPIRES:-24h}
       PASSWORD_RESET_EXPIRES: ${PASSWORD_RESET_EXPIRES:-1h}

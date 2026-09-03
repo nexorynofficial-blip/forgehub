@@ -46,6 +46,16 @@ const optionalBoolean = z
  */
 const PLACEHOLDER_PREFIX = "replace_me";
 
+/**
+ * The sender `EMAIL_FROM` falls back to.
+ *
+ * Fine for the console transport, which sends nothing. Named as a constant so
+ * the resend rule can reject it by identity: `forgehub.dev` is not a domain
+ * any real deployment has verified, so leaving the default in place would
+ * mean every message bounced at Resend rather than at boot.
+ */
+const DEFAULT_EMAIL_FROM = "ForgeHub <no-reply@forgehub.dev>";
+
 /** A cryptographic secret: long enough, and demonstrably not the template's. */
 function secret(): z.ZodType<string> {
   return z
@@ -118,9 +128,59 @@ const envSchema = z.object({
 
   /* ── Email ───────────────────────────────────────────────────────────── */
 
-  /** Only the development provider exists so far (BACKEND_TRD.md §26). */
-  EMAIL_PROVIDER: z.enum(["console"]).default("console"),
-  EMAIL_FROM: z.string().min(1).default("ForgeHub <no-reply@forgehub.dev>"),
+  /**
+   * Which transport `integrations/email` composes.
+   *
+   * `console` prints to stdout and refuses to emit in production; `resend`
+   * is the production transport. The cross-field rules that make the pair
+   * safe — resend requires a key and a real sender, and production refuses
+   * console outright — live in the `superRefine` below, because they depend
+   * on more than one variable.
+   */
+  EMAIL_PROVIDER: z.enum(["console", "resend"]).default("console"),
+
+  /**
+   * The sender address. Resend delivers only from a domain verified in the
+   * Resend dashboard, so the shipped default is refused when the resend
+   * transport is selected — see `DEFAULT_EMAIL_FROM` below.
+   */
+  EMAIL_FROM: z.string().min(1).default(DEFAULT_EMAIL_FROM),
+
+  /**
+   * Resend API key. Optional here and required by `superRefine` only when
+   * `EMAIL_PROVIDER=resend`, so a development checkout needs no mail
+   * credential at all.
+   *
+   * Deliberately not validated with `secret()`: that rule demands 32+
+   * characters, and Resend's key length is Resend's to change. The bound
+   * below is a sanity floor, and the placeholder check is the part that
+   * matters — it is what stops `cp .env.example .env` from booting on a
+   * value that is not a key.
+   */
+  RESEND_API_KEY: z.preprocess(
+    /*
+     * Compose (and most container platforms) substitute an unset variable as
+     * the empty string rather than omitting it, so `""` has to mean "not
+     * configured" — otherwise merely forwarding this key would make every
+     * development `docker compose up` fail the length check below.
+     *
+     * The `.optional()` sits **inside** the preprocess rather than outside
+     * it. Outside, it only short-circuits when the value is already
+     * `undefined`: an empty string is not, so preprocess would run, hand
+     * `undefined` to a required inner schema, and reject with "expected
+     * string, received undefined". That is a crash loop on every container
+     * that forwards the variable without setting it.
+     */
+    (value) =>
+      typeof value === "string" && value.trim().length === 0 ? undefined : value,
+    z
+      .string()
+      .min(20, "does not look like a Resend API key")
+      .refine((value) => !value.toLowerCase().startsWith(PLACEHOLDER_PREFIX), {
+        message: "is still the .env.example placeholder — paste the real key from Resend",
+      })
+      .optional(),
+  ),
   /** Public frontend origin — used to build verification/reset links. */
   APP_URL: z.string().url().default("http://localhost:3000"),
   EMAIL_VERIFICATION_EXPIRES: z.string().min(1).default("24h"),
@@ -171,18 +231,63 @@ const envSchema = z.object({
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
 });
 
-export type Env = z.infer<typeof envSchema>;
+/**
+ * Rules that span more than one variable, so they cannot live on a field.
+ *
+ * All three concern email, and all three exist because the alternative is
+ * silence: a misconfigured transport does not fail a request, it drops a
+ * password-reset link and returns 200, and nobody finds out until a user
+ * cannot get back into their account.
+ */
+const envSchemaWithRules = envSchema.superRefine((value, ctx) => {
+  if (value.EMAIL_PROVIDER === "resend") {
+    if (value.RESEND_API_KEY === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["RESEND_API_KEY"],
+        message: "is required when EMAIL_PROVIDER=resend",
+      });
+    }
+
+    if (value.EMAIL_FROM === DEFAULT_EMAIL_FROM) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["EMAIL_FROM"],
+        message:
+          "must be an address on a domain you have verified with Resend — the built-in default will bounce",
+      });
+    }
+  }
+
+  /**
+   * The console transport refuses to print in production (a reset link in
+   * container logs is a credential leak), which means selecting it there
+   * drops every message. Refusing to boot is the only honest outcome: the
+   * previous behaviour was a production deployment that looked healthy and
+   * sent no mail at all.
+   */
+  if (value.NODE_ENV === "production" && value.EMAIL_PROVIDER === "console") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["EMAIL_PROVIDER"],
+      message:
+        "cannot be 'console' in production — it sends nothing. Set EMAIL_PROVIDER=resend and supply RESEND_API_KEY",
+    });
+  }
+});
+
+export type Env = z.infer<typeof envSchemaWithRules>;
 
 /**
  * Exported separately from the module-level parse so tests can exercise
  * validation against arbitrary input without mutating `process.env`.
  */
 export function parseEnv(source: NodeJS.ProcessEnv = process.env): Env {
-  return envSchema.parse(source);
+  return envSchemaWithRules.parse(source);
 }
 
 function loadEnv(): Env {
-  const result = envSchema.safeParse(process.env);
+  const result = envSchemaWithRules.safeParse(process.env);
 
   if (!result.success) {
     // Logger depends on env, so it cannot be used here — plain stderr only.

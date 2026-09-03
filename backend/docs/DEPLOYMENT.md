@@ -98,6 +98,7 @@ rather than failing later on the first request that touches a bad value.
 | `JWT_ACCESS_SECRET`     | ≥32 chars, and not the `.env.example` placeholder   |
 | `JWT_REFRESH_SECRET`    | ≥32 chars; HMAC pepper for stored token hashes      |
 | `TWO_FACTOR_SECRET_KEY` | ≥32 chars; AES-256-GCM key for TOTP secrets at rest |
+| `RESEND_API_KEY`        | **only when `EMAIL_PROVIDER=resend`** — see below   |
 
 Compose additionally requires `POSTGRES_USER`, `POSTGRES_PASSWORD`, and
 `POSTGRES_DB` for the database service. None of the three carries a default, so
@@ -114,7 +115,7 @@ password.
 | `LOG_LEVEL`           | `info`                  | pino level                                      |
 | `COOKIE_SECURE`       | _unset_                 | unset means **on in production**, off elsewhere |
 | `COOKIE_SAMESITE`     | `lax`                   | `none` also requires `COOKIE_SECURE=true`       |
-| `EMAIL_PROVIDER`      | `console`               | only the development transport exists           |
+| `EMAIL_PROVIDER`      | `console`               | `console` or `resend` — see **Email** below     |
 | `AI_PROVIDER`         | `local`                 | `local` or `disabled`                           |
 | `SHUTDOWN_TIMEOUT_MS` | `10000`                 | hard ceiling on draining                        |
 
@@ -163,6 +164,86 @@ openssl rand -base64 48   # once each for the three secrets
 `tests/deployment.test.ts` asserts that every credential Compose forwards is a
 `${VAR}` reference with **no inline default**, so no deployment can silently
 fall back to a shared fallback credential.
+
+## Email
+
+**Transport: Resend, over its HTTP API.**
+
+```bash
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=re_...                          # from the Resend dashboard
+EMAIL_FROM=ForgeHub <no-reply@mail.your-domain>
+APP_URL=https://app.your-domain
+```
+
+Implemented against `fetch` rather than the `resend` SDK: the integration is
+one POST to one endpoint with a bearer token, and Node 22 ships `fetch`
+natively, so an SDK would add a dependency to save nothing. **The dependency
+count for email is zero.**
+
+### You must verify a sending domain
+
+Resend delivers only from a domain verified in its dashboard, which means
+publishing the DNS records it gives you. Until that is done, every message is
+rejected at the API. The schema refuses to boot if `EMAIL_FROM` is still the
+built-in `forgehub.dev` default while `EMAIL_PROVIDER=resend`, because that
+domain belongs to nobody and every send would bounce.
+
+### Configuration that cannot silently fail
+
+`config/env.ts` refuses to start the process in three cases, all of which
+previously produced a deployment that looked healthy and sent nothing:
+
+| Configuration                                         | Result     |
+| ----------------------------------------------------- | ---------- |
+| `EMAIL_PROVIDER=resend` with no `RESEND_API_KEY`      | boot fails |
+| `EMAIL_PROVIDER=resend` with the default `EMAIL_FROM` | boot fails |
+| `NODE_ENV=production` with `EMAIL_PROVIDER=console`   | boot fails |
+
+The last is the important one. The console transport refuses to print in
+production — a reset link in container logs is a credential leak — so selecting
+it there drops every message. That is now a refusal to start rather than a
+silent loss.
+
+`RESEND_API_KEY` is forwarded by Compose as `${RESEND_API_KEY}` with no inline
+default. An unset variable substitutes as the empty string, which the schema
+reads as "not configured", so the line is inert until you select resend.
+
+### Which flows depend on it
+
+Email verification, password reset, and the security alert sent after a password
+change or a 2FA toggle. The frontend routes those links target —
+`/verify-email?token=…` and `/reset-password?token=…` — both exist and consume
+their token; `tests/email-unit.test.ts` asserts the generated paths match.
+
+Verification currently gates no route (`requireVerifiedEmail` is defined but
+applied nowhere), so unverified users are not locked out while DNS propagates.
+
+## First platform administrator
+
+Registration always assigns `member`, promotion requires an existing
+`platform_admin`, and the seed refuses to run in production. A fresh production
+database therefore has no administrator and no supported way to acquire one.
+
+```bash
+npm run admin:bootstrap -- --email founder@your-domain
+```
+
+Run from a checkout with `DATABASE_URL` pointed at the target database — the
+same access migrations already need. `scripts/` is excluded from the runtime
+image, for the same reason the Prisma CLI is.
+
+The command:
+
+- promotes an **existing** account; it never creates one and never sets a password
+- **refuses to run once any platform admin exists**, which is what keeps it a
+  bootstrap rather than a permanent unaudited escalation path
+- runs at `Serializable` isolation, so two concurrent runs cannot both promote
+- writes a `ROLE_CHANGED` audit row with a null actor and `via: admin:bootstrap`,
+  recording that the grant came from an operator rather than a signed-in user
+
+Every later role change goes through `PATCH /admin/users/:id/role`, where it is
+attributable to a person.
 
 ## Database migrations
 
@@ -311,6 +392,45 @@ docker compose up -d backend    # recreates only the backend container
 
 Neither command touches the volumes or the database.
 
+## Frontend production environment
+
+Two variables, both public by construction — `NEXT_PUBLIC_*` values are inlined
+into the browser bundle, so neither may ever hold a secret:
+
+```bash
+NEXT_PUBLIC_API_URL=https://api.your-domain/api/v1   # includes the version prefix
+NEXT_PUBLIC_SOCKET_URL=https://api.your-domain       # the server ROOT, no prefix
+```
+
+**Set them in the build environment.** They are baked in when `next build` runs,
+not read at startup, so setting them only at runtime has no effect.
+
+A production build now **fails** rather than falling back. `next.config.ts`
+validates during `PHASE_PRODUCTION_BUILD` and `src/lib/env.ts` validates again
+from module scope; both apply the same rules from `src/lib/env-contract.ts`.
+A build is refused when either variable is unset, is not an absolute http(s)
+URL, points at loopback, or — for the socket URL — carries a path, which would
+produce `/api/v1/socket.io` and fail the handshake.
+
+Previously an omitted variable baked `http://localhost:4000` into the bundle:
+the build succeeded, the deployment reported healthy, and every request from a
+real browser went to the visitor's own machine.
+
+## Backend replicas
+
+```text
+backend application replicas = 1
+```
+
+Socket.IO is configured with **no Redis adapter**, so rooms are process-local.
+With two instances, a message published to `user:<id>` on instance A never
+reaches that user's socket on instance B — chat silently misses messages,
+presence disagrees, and notification fan-out is partial. HTTP is stateless and
+would scale horizontally; realtime is what caps the deployment at one.
+
+Single-instance realtime is the supported topology for initial launch. Adding a
+replica requires the adapter first.
+
 ## Known operational limitations
 
 - **`NODE_ENV` defaults to `development` in Compose**, above. The single
@@ -322,11 +442,9 @@ Neither command touches the volumes or the database.
   an old schema.
 - **No background workers.** §36 lists them as optional; `src/jobs/` is empty
   and nothing is queued.
-- **Email does not leave the process.** `EMAIL_PROVIDER=console` is the only
-  transport, and it refuses to print in production — so a production deployment
-  currently sends no verification or reset mail at all. A real provider is a
-  later phase.
-- **Single-node Socket.IO.** No Redis adapter is configured, so running more
-  than one backend instance would not share socket rooms between them. §36 asks
+- **Email requires a Resend account.** The transport exists; the credential and
+  the verified sending domain are yours to supply. See **Email** above.
+- **Single-node Socket.IO.** No Redis adapter is configured, so the deployment
+  is capped at one backend replica — see **Backend replicas** above. §36 asks
   that the architecture _allow_ multiple instances; HTTP scales horizontally
   today, realtime does not.

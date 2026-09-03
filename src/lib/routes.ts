@@ -15,6 +15,8 @@ export const routes = {
     login: "/login",
     signup: "/signup",
     forgotPassword: "/forgot-password",
+    // Where the emailed reset link lands (backend `APP_URL/reset-password`).
+    resetPassword: "/reset-password",
     verifyEmail: "/verify-email",
     twoFactor: "/2fa",
   },

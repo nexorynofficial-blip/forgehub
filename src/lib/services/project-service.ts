@@ -1,4 +1,5 @@
 import type {
+  FundingStage,
   Milestone,
   Project,
   ProjectMemberRole,
@@ -171,6 +172,12 @@ export interface ProjectDraft {
   techStack?: string[];
   tags?: string[];
   status?: ProjectStatus;
+  /**
+   * Present because the project page renders it (`PROJECT_FUNDING_META`) and
+   * `createProjectSchema` accepts it. Omitting it from the draft would have
+   * left the create form unable to set a field the detail view displays.
+   */
+  fundingStage?: FundingStage;
   visibility?: "public" | "private" | "unlisted";
   demoUrl?: string | null;
   repositoryUrl?: string | null;

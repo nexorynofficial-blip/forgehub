@@ -1,6 +1,10 @@
 import type { UserRole } from "@/types";
 import { api, clearAccessToken, refreshSession, setAccessToken } from "@/lib/api";
-import type { LoginValues, SignupValues } from "@/lib/validations/auth";
+import type {
+  LoginValues,
+  ResetPasswordValues,
+  SignupValues,
+} from "@/lib/validations/auth";
 
 /**
  * The Authentication API (`backend/src/modules/auth`).
@@ -137,6 +141,36 @@ export async function requestPasswordReset(email: string): Promise<{ success: tr
 export async function resendVerificationEmail(email: string): Promise<{ success: true }> {
   await api.post("/auth/verify-email/resend", { email });
   return { success: true };
+}
+
+/**
+ * `POST /auth/password/reset` — the second half of the forgot-password flow.
+ *
+ * The token comes from the emailed link (`APP_URL/reset-password?token=…`),
+ * not from anything the user types, and `confirmPassword` is sent because the
+ * backend re-checks the match itself rather than trusting the client to have.
+ *
+ * Completing a reset **revokes every session**, including any this browser
+ * held, and the backend clears the refresh cookie in the same response. Any
+ * access token still in memory is therefore already dead, so the local one is
+ * cleared here rather than left to fail on the next request.
+ */
+export async function resetPassword(values: ResetPasswordValues): Promise<void> {
+  await api.post("/auth/password/reset", values);
+  clearAccessToken();
+}
+
+/**
+ * `POST /auth/verify-email` — the second half of the sign-up flow.
+ *
+ * The verification link lands on `/verify-email?token=…`; this is what turns
+ * that arrival into a verified account. It deliberately does **not** sign the
+ * user in: the backend answers with the user record and no access token, so
+ * the next step is the login screen.
+ */
+export async function verifyEmail(token: string): Promise<SessionUser> {
+  const { user } = await api.post<{ user: SessionUser }>("/auth/verify-email", { token });
+  return user;
 }
 
 /* ── Session lifecycle ────────────────────────────────────────────────────── */

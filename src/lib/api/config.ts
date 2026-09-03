@@ -1,13 +1,14 @@
+import { API_BASE_URL } from "@/lib/env";
+
 /**
  * Where the backend lives.
  *
- * Read once, from `NEXT_PUBLIC_API_URL`, so no service file ever hardcodes a
- * host. The fallback matches the backend's own `.env.example` defaults
- * (`PORT=4000`, API mounted at `/api/v1`), which keeps a fresh clone working
- * with no `.env.local` at all — see `.env.example` at the repo root.
+ * The value itself comes from `lib/env.ts`, which is the single validated
+ * source of truth for both public URLs — a second `process.env` read here
+ * would be a second place for the localhost fallback to reappear. Re-exported
+ * rather than re-derived so `lib/api`'s public surface is unchanged.
  */
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/api/v1";
+export { API_BASE_URL };
 
 /**
  * Builds an absolute URL from an API-relative path.

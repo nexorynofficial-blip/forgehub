@@ -44,3 +44,24 @@ export const twoFactorSchema = z.object({
   code: z.string().length(6, "Enter all 6 digits"),
 });
 export type TwoFactorValues = z.infer<typeof twoFactorSchema>;
+
+/**
+ * Completing a password reset from an emailed link.
+ *
+ * Mirrors the backend's `resetPasswordSchema` field-for-field — `token`,
+ * `password`, `confirmPassword` — so the form cannot pass locally and then be
+ * rejected on submit. The token is not a user-editable field; it comes from
+ * the link's query string and is carried through the form so a single schema
+ * describes the whole request body.
+ */
+export const resetPasswordSchema = z
+  .object({
+    token: z.string().min(1),
+    password,
+    confirmPassword: z.string(),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords don't match",
+    path: ["confirmPassword"],
+  });
+export type ResetPasswordValues = z.infer<typeof resetPasswordSchema>;

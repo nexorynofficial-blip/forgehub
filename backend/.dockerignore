@@ -8,6 +8,7 @@ coverage
 .git
 .gitignore
 tests
+scripts
 vitest.config.ts
 README.md
 Dockerfile
