@@ -4,19 +4,26 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { ShieldAlert } from "lucide-react";
 
+import { queryKeys } from "@/lib/query-keys";
 import { isAdminRole } from "@/lib/rbac";
 import { routes } from "@/lib/routes";
 import { getCurrentUser } from "@/lib/services/user-service";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
-/** TRD.md §7 RBAC, enforced at the route level — not just the sidebar's nav
- * visibility (Phase 04). Purely client-side, like every other guard in this
- * mock build (no session/auth backend exists to enforce it server-side).
- * See docs/ASSUMPTIONS.md (Phase 11). */
+/**
+ * TRD.md §7 RBAC at the route level.
+ *
+ * **An affordance, not the enforcement.** The role read here comes from
+ * `GET /users/me` — the server's own answer rather than a client-held claim —
+ * but the gate that actually matters is `requireAdmin` / `requirePlatformAdmin`
+ * on every admin route. Someone who edited this check out of the bundle would
+ * reach a page whose every request answers 403. Its purpose is to avoid
+ * showing an ordinary member a dashboard of empty error states.
+ */
 export function AdminGuard({ children }: { children: React.ReactNode }) {
   const { data: user, isLoading } = useQuery({
-    queryKey: ["currentUser"],
+    queryKey: queryKeys.currentUser,
     queryFn: getCurrentUser,
   });
 

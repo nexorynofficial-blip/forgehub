@@ -5,13 +5,14 @@ import { Flag, FolderGit2, Users2, UsersRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { formatCompactNumber } from "@/lib/format";
+import { queryKeys } from "@/lib/query-keys";
 import { getOverviewStats } from "@/lib/services/admin-service";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export function OverviewStats() {
   const { data: stats, isLoading } = useQuery({
-    queryKey: ["adminOverviewStats"],
+    queryKey: queryKeys.adminStats,
     queryFn: getOverviewStats,
   });
 

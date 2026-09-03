@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { formatRelativeTime } from "@/lib/format";
 import { routes } from "@/lib/routes";
+import { queryKeys } from "@/lib/query-keys";
 import { getRecentlyJoinedUsers } from "@/lib/services/admin-service";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 export function RecentUsersWidget() {
   const { data: users, isLoading } = useQuery({
-    queryKey: ["adminRecentUsers"],
+    queryKey: [...queryKeys.adminUsers, "recent"],
     queryFn: () => getRecentlyJoinedUsers(),
   });
 

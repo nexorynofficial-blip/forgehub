@@ -2,17 +2,17 @@
 
 import { useQuery } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/query-keys";
 import { getCommunityPinnedPosts } from "@/lib/services/community-service";
-import type { Community } from "@/types";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PostCard } from "@/components/feed/post-card";
 
-/** PRD.md §4.6 "Pinned Posts" — reuses Feed's `PostCard` (Phase 06) as-is,
- * resolved against the same `mock/posts.ts` pool. */
-export function CommunityPinnedPosts({ community }: { community: Community }) {
+/** PRD.md §4.6 "Pinned Posts" — reuses Feed's `PostCard` as-is, now resolved
+ * from the community's real pin list rather than the mock post pool. */
+export function CommunityPinnedPosts({ slug }: { slug: string }) {
   const { data: posts, isLoading } = useQuery({
-    queryKey: ["communityPinnedPosts", community.id],
-    queryFn: () => getCommunityPinnedPosts(community),
+    queryKey: queryKeys.communityPins(slug),
+    queryFn: () => getCommunityPinnedPosts(slug),
   });
 
   if (!isLoading && posts?.length === 0) return null;

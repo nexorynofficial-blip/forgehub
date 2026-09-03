@@ -2,17 +2,21 @@
 
 import { useQuery } from "@tanstack/react-query";
 
+import { apiErrorMessage } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import { getAdminUsers } from "@/lib/services/admin-service";
+import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UsersList } from "@/components/admin/users-list";
 
+/** PRD.md §4.12 "User Management" — offset-paginated, server-authorized. */
 export function UsersPage() {
-  const { data: users, isLoading } = useQuery({
-    queryKey: ["adminUsers"],
-    queryFn: getAdminUsers,
+  const { data, isLoading, error } = useQuery({
+    queryKey: queryKeys.adminUsers,
+    queryFn: () => getAdminUsers({ limit: 50 }),
   });
 
-  if (isLoading || !users) {
+  if (isLoading) {
     return (
       <div className="flex flex-col gap-3">
         {Array.from({ length: 4 }).map((_, i) => (
@@ -22,5 +26,15 @@ export function UsersPage() {
     );
   }
 
-  return <UsersList initialUsers={users} />;
+  if (error) {
+    return (
+      <Card className="p-10 text-center">
+        <p className="text-muted-foreground text-sm">
+          {apiErrorMessage(error, "The user list could not be loaded.")}
+        </p>
+      </Card>
+    );
+  }
+
+  return <UsersList users={data?.items ?? []} total={data?.pagination.total ?? 0} />;
 }

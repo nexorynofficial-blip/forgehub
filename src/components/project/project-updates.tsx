@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { formatRelativeTime } from "@/lib/format";
+import { queryKeys } from "@/lib/query-keys";
 import { getProjectUpdates } from "@/lib/services/project-service";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,11 +12,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 /** UI_UX.md §9 "Updates" — the project's own changelog, distinct from Feed
  * milestone/announcement posts (those are social; these are the project's
  * record). See docs/ASSUMPTIONS.md (Phase 07). */
-export function ProjectUpdates({ projectId }: { projectId: string }) {
-  const { data: updates, isLoading } = useQuery({
-    queryKey: ["projectUpdates", projectId],
-    queryFn: () => getProjectUpdates(projectId),
+export function ProjectUpdates({ slug }: { slug: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: queryKeys.projectUpdates(slug),
+    queryFn: () => getProjectUpdates(slug),
   });
+
+  const updates = data?.updates;
 
   if (!isLoading && updates?.length === 0) return null;
 

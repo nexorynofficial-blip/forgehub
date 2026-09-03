@@ -1,46 +1,74 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
   AtSign,
   Bell,
+  CornerDownRight,
   Heart,
   Mail,
   MessageCircle,
   MessageSquare,
   Rocket,
+  ShieldAlert,
   Trophy,
   UserPlus,
+  Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { formatRelativeTime } from "@/lib/format";
+import { queryKeys } from "@/lib/query-keys";
 import {
   getNotifications,
+  getUnreadNotificationCount,
   markAllNotificationsRead,
+  markNotificationRead,
+  type NotificationItem,
 } from "@/lib/services/notification-service";
 import { cn } from "@/lib/utils";
-import type { NotificationType, NotificationWithActor } from "@/types";
+import type { NotificationType } from "@/types";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 
+/**
+ * All twelve persisted types.
+ *
+ * The four beyond the original eight — `reply`, `project_invite`,
+ * `community_invite`, `moderation` — are types the server really sends, and a
+ * partial map would render an undefined component for them.
+ */
 const TYPE_ICON: Record<NotificationType, LucideIcon> = {
   like: Heart,
   comment: MessageCircle,
+  reply: CornerDownRight,
   mention: AtSign,
   follower: UserPlus,
   project_update: Rocket,
   invite: Mail,
+  project_invite: Mail,
+  community_invite: Users,
   message: MessageSquare,
   achievement: Trophy,
+  moderation: ShieldAlert,
 };
 
-function NotificationRow({ notification }: { notification: NotificationWithActor }) {
+function NotificationRow({
+  notification,
+  onRead,
+}: {
+  notification: NotificationItem;
+  onRead: (id: string) => void;
+}) {
   const Icon = TYPE_ICON[notification.type];
 
   return (
@@ -67,32 +95,63 @@ function NotificationRow({ notification }: { notification: NotificationWithActor
         </time>
       </div>
       {!notification.isRead && (
-        <span
-          className="bg-primary mt-1.5 size-2 shrink-0 rounded-full"
-          aria-hidden="true"
-        />
+        <button
+          type="button"
+          onClick={() => onRead(notification.id)}
+          aria-label="Mark as read"
+          className="mt-1.5 shrink-0"
+        >
+          <span className="bg-primary block size-2 rounded-full" aria-hidden="true" />
+        </button>
       )}
     </li>
   );
 }
 
-/** Bell trigger + list, only mounted once the query resolves — same
- * local-optimistic-state pattern as `NotificationsMatrix`
- * (components/settings/notifications-form.tsx). See docs/ASSUMPTIONS.md
- * (Phase 10) for why this list avoids relying on `invalidateQueries` to
- * re-render itself. */
-function NotificationsBell({
-  initialNotifications,
-}: {
-  initialNotifications: NotificationWithActor[];
-}) {
-  const [notifications, setNotifications] = useState(initialNotifications);
-  const unreadCount = notifications.filter((n) => !n.isRead).length;
+/**
+ * UI_UX.md §7 — topbar bell with unread badge and dropdown feed.
+ *
+ * The badge count is its own query rather than a count of loaded rows: unread
+ * notifications can sit far beyond the first page, so counting what happens to
+ * be in memory would under-report. `SocketProvider` prepends `notification:new`
+ * into this list's cache and invalidates the badge, so nothing here polls.
+ */
+export function NotificationsPanel() {
+  const queryClient = useQueryClient();
 
-  async function handleMarkAllRead() {
-    setNotifications((prev) => prev.map((n) => ({ ...n, isRead: true })));
-    await markAllNotificationsRead();
+  const { data, isLoading } = useInfiniteQuery({
+    queryKey: queryKeys.notifications,
+    queryFn: ({ pageParam }) => getNotifications({ cursor: pageParam ?? undefined }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+  });
+
+  const { data: unreadCount = 0 } = useQuery({
+    queryKey: queryKeys.unreadNotifications,
+    queryFn: getUnreadNotificationCount,
+  });
+
+  const readOne = useMutation({
+    mutationFn: markNotificationRead,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.unreadNotifications });
+    },
+  });
+
+  const readAll = useMutation({
+    mutationFn: markAllNotificationsRead,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.unreadNotifications });
+    },
+  });
+
+  if (isLoading) {
+    return <Skeleton className="size-10 rounded-full" />;
   }
+
+  const notifications = data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
     <Popover>
@@ -131,7 +190,8 @@ function NotificationsBell({
               variant="link"
               size="sm"
               className="text-xs"
-              onClick={handleMarkAllRead}
+              disabled={readAll.isPending}
+              onClick={() => readAll.mutate()}
             >
               Mark all read
             </Button>
@@ -146,7 +206,11 @@ function NotificationsBell({
           ) : (
             <ul className="divide-border divide-y">
               {notifications.map((notification) => (
-                <NotificationRow key={notification.id} notification={notification} />
+                <NotificationRow
+                  key={notification.id}
+                  notification={notification}
+                  onRead={(id) => readOne.mutate(id)}
+                />
               ))}
             </ul>
           )}
@@ -154,18 +218,4 @@ function NotificationsBell({
       </PopoverContent>
     </Popover>
   );
-}
-
-/** UI_UX.md §7 "Notifications" — topbar bell with unread badge and dropdown feed. */
-export function NotificationsPanel() {
-  const { data: notifications, isLoading } = useQuery({
-    queryKey: ["notifications"],
-    queryFn: getNotifications,
-  });
-
-  if (isLoading || !notifications) {
-    return <Skeleton className="size-10 rounded-full" />;
-  }
-
-  return <NotificationsBell initialNotifications={notifications} />;
 }

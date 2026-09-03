@@ -1,6 +1,13 @@
 /** Barrel for the API layer, so services import from one place. */
 
-export { api, refreshSession, type RefreshPayload, type RequestOptions } from "./client";
+export {
+  api,
+  refreshSession,
+  type OffsetPage,
+  type Pagination,
+  type RefreshPayload,
+  type RequestOptions,
+} from "./client";
 export { API_BASE_URL, apiUrl } from "./config";
 export {
   ApiError,

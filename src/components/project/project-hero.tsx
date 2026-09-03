@@ -1,28 +1,73 @@
 "use client";
 
+import { useState } from "react";
 import Image from "next/image";
-import { useQuery } from "@tanstack/react-query";
-import { BookOpen, ExternalLink } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { BookOpen, ExternalLink, Heart, Star } from "lucide-react";
 
+import { apiErrorMessage } from "@/lib/api";
 import { PROJECT_FUNDING_META, PROJECT_STATUS_META } from "@/lib/project-meta";
-import { getProjectMembers } from "@/lib/services/project-service";
-import type { Project } from "@/types";
+import { queryKeys } from "@/lib/query-keys";
+import {
+  followProject,
+  likeProject,
+  unfollowProject,
+  unlikeProject,
+  type ProjectDetail,
+  type ProjectViewerState,
+} from "@/lib/services/project-service";
+import { useToast } from "@/hooks/use-toast";
 import { GitHubIcon } from "@/components/auth/oauth-icons";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AuthorHoverCard } from "@/components/feed/author-hover-card";
 
-/** UI_UX.md §9 "Large Cover". Reuses the Phase 05 profile banner's
- * gradient-drift treatment since no real `coverImageUrl` exists in any
- * fixture. */
-export function ProjectHero({ project }: { project: Project }) {
-  const { data: members } = useQuery({
-    queryKey: ["projectMembers", project.id],
-    queryFn: () => getProjectMembers(project),
-  });
-  const owner = members?.find((member) => member.role === "owner");
+/**
+ * UI_UX.md §9 "Large Cover" — unchanged treatment, real data behind it.
+ *
+ * The owner byline now reads `project.owner`, which the backend embeds in the
+ * detail response precisely so this header needs no second request. The old
+ * member-list lookup existed only because the mock stored no owner on the
+ * project itself.
+ */
+export function ProjectHero({
+  project,
+  viewer,
+}: {
+  project: ProjectDetail;
+  viewer: ProjectViewerState | null;
+}) {
+  const toast = useToast((state) => state.toast);
+  const queryClient = useQueryClient();
+  const owner = project.owner;
   const status = PROJECT_STATUS_META[project.status];
+
+  // Seeded from the server, then replaced by whatever the server answers next.
+  // The mutation never guesses the resulting state; it reports what came back.
+  const [liked, setLiked] = useState(viewer?.hasLiked ?? false);
+  const [following, setFollowing] = useState(viewer?.isFollowing ?? false);
+
+  const engage = useMutation({
+    mutationFn: async (action: "like" | "follow") => {
+      if (action === "like") {
+        return liked ? unlikeProject(project.slug) : likeProject(project.slug);
+      }
+      return following ? unfollowProject(project.slug) : followProject(project.slug);
+    },
+    onSuccess: (result) => {
+      if ("liked" in result) setLiked(result.liked);
+      else setFollowing(result.following);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.project(project.slug) });
+    },
+    onError: (error) => {
+      toast({
+        variant: "danger",
+        title: "That did not go through",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    },
+  });
 
   return (
     <div>
@@ -53,19 +98,17 @@ export function ProjectHero({ project }: { project: Project }) {
             <Badge variant="outline">{PROJECT_FUNDING_META[project.fundingStage]}</Badge>
           </div>
 
-          {owner && (
-            <AuthorHoverCard author={owner.user}>
-              <span className="text-muted-foreground hover:text-foreground mt-2 inline-flex items-center gap-1.5 text-sm transition-colors">
-                <Avatar className="size-5">
-                  <AvatarImage src={owner.user.avatarUrl ?? undefined} alt="" />
-                  <AvatarFallback className="text-[10px]">
-                    {owner.user.displayName.charAt(0)}
-                  </AvatarFallback>
-                </Avatar>
-                {owner.user.displayName}
-              </span>
-            </AuthorHoverCard>
-          )}
+          <AuthorHoverCard author={owner}>
+            <span className="text-muted-foreground hover:text-foreground mt-2 inline-flex items-center gap-1.5 text-sm transition-colors">
+              <Avatar className="size-5">
+                <AvatarImage src={owner.avatarUrl ?? undefined} alt="" />
+                <AvatarFallback className="text-[10px]">
+                  {owner.displayName.charAt(0)}
+                </AvatarFallback>
+              </Avatar>
+              {owner.displayName}
+            </span>
+          </AuthorHoverCard>
 
           <p className="text-muted-foreground mt-3 max-w-2xl text-sm leading-relaxed">
             {project.description}
@@ -86,6 +129,31 @@ export function ProjectHero({ project }: { project: Project }) {
         </div>
 
         <div className="flex shrink-0 flex-wrap gap-2">
+          {/* Rendered only for a signed-in viewer. `viewer` is null for
+              anonymous callers, and an affordance that can only ever answer
+              401 is worse than no affordance. */}
+          {viewer && (
+            <>
+              <Button
+                variant={liked ? "primary" : "secondary"}
+                disabled={engage.isPending}
+                onClick={() => engage.mutate("like")}
+                aria-pressed={liked}
+              >
+                <Heart className={liked ? "fill-current" : undefined} />
+                {liked ? "Liked" : "Like"}
+              </Button>
+              <Button
+                variant={following ? "primary" : "secondary"}
+                disabled={engage.isPending}
+                onClick={() => engage.mutate("follow")}
+                aria-pressed={following}
+              >
+                <Star className={following ? "fill-current" : undefined} />
+                {following ? "Following" : "Follow"}
+              </Button>
+            </>
+          )}
           {project.demoUrl && (
             <Button asChild variant="primary">
               <a href={project.demoUrl} target="_blank" rel="noreferrer">

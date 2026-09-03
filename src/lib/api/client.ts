@@ -30,11 +30,41 @@ import {
  * (`src/types/common.ts`) reads `data`/`error`, so both halves are present and
  * neither side had to change.
  */
+/** Mirrors `backend/src/utils/response.ts`. */
+export interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
+}
+
+/**
+ * One page of an offset-paginated collection.
+ *
+ * The backend runs two pagination models and this is the second one. Cursor
+ * collections (feed, messages, notifications, follows) return their paging
+ * *inside* `data`, so `api.get` already yields the whole shape. Offset
+ * collections (projects, communities, members, admin tables, search) return a
+ * bare array in `data` with `pagination` as a sibling key — so they need a
+ * call that reads the envelope rather than only its payload.
+ */
+export interface OffsetPage<T> {
+  items: T[];
+  pagination: Pagination;
+}
+
 interface SuccessEnvelope<T> {
   success: true;
   data: T;
   message: string;
   error: null;
+  /**
+   * Present only on offset-paginated collections, where the backend puts it
+   * *beside* `data` rather than inside it (`backend/src/utils/response.ts`
+   * `paginatedResponse`). `request` returns `data` alone, so this key would
+   * be dropped on the floor — `requestPaginated` below is what keeps it.
+   */
+  pagination?: Pagination;
 }
 
 interface ErrorEnvelope {
@@ -168,7 +198,10 @@ function buildUrl(path: string, query: RequestOptions["query"]): string {
   return serialised.length > 0 ? `${url}?${serialised}` : url;
 }
 
-async function request<T>(path: string, options: InternalOptions = {}): Promise<T> {
+async function requestEnvelope<T>(
+  path: string,
+  options: InternalOptions = {},
+): Promise<SuccessEnvelope<T> | null> {
   const { method = "GET", body, query, signal, skipAuthRefresh, retried } = options;
 
   // Read the token *now*, not when this module was evaluated — a closure over
@@ -199,12 +232,12 @@ async function request<T>(path: string, options: InternalOptions = {}): Promise<
   const envelope = await readEnvelope<T>(response);
 
   if (response.ok && envelope && envelope.success) {
-    return envelope.data;
+    return envelope;
   }
 
   if (response.ok) {
     // 2xx that carried no usable envelope — treat as an empty success.
-    return undefined as T;
+    return null;
   }
 
   /*
@@ -220,11 +253,52 @@ async function request<T>(path: string, options: InternalOptions = {}): Promise<
   if (canRetry) {
     const refreshed = await refreshSession();
     if (refreshed) {
-      return request<T>(path, { ...options, retried: true });
+      return requestEnvelope<T>(path, { ...options, retried: true });
     }
   }
 
   throw toApiError(response, envelope);
+}
+
+/**
+ * The ordinary call: the envelope’s payload and nothing else.
+ *
+ * Unchanged in behaviour from Phase 1 — it is now a thin wrapper so that the
+ * paginated variant below can reach the sibling `pagination` key without a
+ * second request path, a second fetch, or a second set of auth rules.
+ */
+async function request<T>(path: string, options: InternalOptions = {}): Promise<T> {
+  const envelope = await requestEnvelope<T>(path, options);
+  return envelope ? envelope.data : (undefined as T);
+}
+
+/**
+ * A GET against an offset-paginated collection.
+ *
+ * Returns the rows *and* their page metadata. Without this, `total` and
+ * `totalPages` are unreachable from the frontend: they live beside `data` in
+ * the envelope, and `request` returns only `data`.
+ *
+ * The fallback covers an endpoint that answers with a bare array and no
+ * `pagination` — the page is then simply "all of it", which is the truthful
+ * reading of an unpaginated response, not an invented count.
+ */
+async function requestPaginated<T>(
+  path: string,
+  options: Omit<RequestOptions, "method" | "body"> = {},
+): Promise<OffsetPage<T>> {
+  const envelope = await requestEnvelope<T[]>(path, { ...options, method: "GET" });
+  const items = envelope?.data ?? [];
+
+  return {
+    items,
+    pagination: envelope?.pagination ?? {
+      page: 1,
+      limit: items.length,
+      total: items.length,
+      totalPages: items.length > 0 ? 1 : 0,
+    },
+  };
 }
 
 /* ── Public surface ───────────────────────────────────────────────────────── */
@@ -253,4 +327,8 @@ export const api = {
 
   delete: <T>(path: string, options?: Omit<RequestOptions, "method" | "body">) =>
     request<T>(path, { ...options, method: "DELETE" }),
+
+  /** GET an offset-paginated list, keeping the envelope’s `pagination`. */
+  getPaginated: <T>(path: string, options?: Omit<RequestOptions, "method" | "body">) =>
+    requestPaginated<T>(path, options),
 };

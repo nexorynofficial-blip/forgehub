@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/query-keys";
 import { getWeeklySignups } from "@/lib/services/admin-service";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -26,7 +27,7 @@ function niceMax(value: number): number {
  * library. */
 export function WeeklySignupsChart() {
   const { data, isLoading } = useQuery({
-    queryKey: ["adminWeeklySignups"],
+    queryKey: queryKeys.adminSignups,
     queryFn: getWeeklySignups,
   });
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);

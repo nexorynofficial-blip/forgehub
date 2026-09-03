@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Crown, Medal } from "lucide-react";
 
 import { formatCompactNumber } from "@/lib/format";
+import { queryKeys } from "@/lib/query-keys";
 import { getLeaderboard } from "@/lib/services/dashboard-service";
 import { getCurrentUser } from "@/lib/services/user-service";
 import { cn } from "@/lib/utils";
@@ -69,14 +70,21 @@ function LeaderboardRow({
   );
 }
 
-/** UI_UX.md §7 "Leaderboard" (PRD.md §4.10 Reputation System). */
+/**
+ * UI_UX.md §7 "Leaderboard" (PRD.md §4.10 Reputation System).
+ *
+ * There is no ranking endpoint in the backend, so the service returns nothing
+ * and the card says why. It renders an unavailable state rather than a
+ * fabricated podium: on a signed-in dashboard, a list of names beside XP
+ * totals reads as a real ranking of real people.
+ */
 export function LeaderboardWidget() {
   const { data: leaderboard, isLoading } = useQuery({
     queryKey: ["leaderboard"],
     queryFn: getLeaderboard,
   });
   const { data: currentUser } = useQuery({
-    queryKey: ["currentUser"],
+    queryKey: queryKeys.currentUser,
     queryFn: getCurrentUser,
   });
 
@@ -95,6 +103,10 @@ export function LeaderboardWidget() {
               </li>
             ))}
           </ul>
+        ) : leaderboard.length === 0 ? (
+          <p className="text-muted-foreground py-6 text-center text-sm">
+            Rankings are not available yet.
+          </p>
         ) : (
           <ul className="flex flex-col gap-1">
             {leaderboard.map((entry) => (

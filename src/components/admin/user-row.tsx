@@ -41,10 +41,13 @@ const STATUS_META: Record<
 
 export function UserRow({
   entry,
+  disabled = false,
   onRoleChange,
   onStatusChange,
 }: {
   entry: AdminUserSummary;
+  /** True while any row on the page has a change in flight. */
+  disabled?: boolean;
   onRoleChange: (userId: string, role: UserRole) => void;
   onStatusChange: (userId: string, status: ModerationStatus) => void;
 }) {
@@ -68,6 +71,7 @@ export function UserRow({
       <div className="flex flex-wrap items-center gap-2">
         <Select
           value={entry.role}
+          disabled={disabled}
           onValueChange={(value) => onRoleChange(entry.user.id, value as UserRole)}
         >
           <SelectTrigger className="w-44">
@@ -89,6 +93,7 @@ export function UserRow({
             <Button
               variant="outline"
               size="sm"
+              disabled={disabled}
               onClick={() => onStatusChange(entry.user.id, "shadow_banned")}
             >
               Shadow ban
@@ -96,6 +101,7 @@ export function UserRow({
             <Button
               variant="danger"
               size="sm"
+              disabled={disabled}
               onClick={() => onStatusChange(entry.user.id, "banned")}
             >
               Ban
@@ -105,6 +111,7 @@ export function UserRow({
           <Button
             variant="secondary"
             size="sm"
+            disabled={disabled}
             onClick={() => onStatusChange(entry.user.id, "active")}
           >
             Restore

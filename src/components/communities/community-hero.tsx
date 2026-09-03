@@ -1,35 +1,84 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Users } from "lucide-react";
 
+import { apiErrorMessage } from "@/lib/api";
 import { formatCompactNumber } from "@/lib/format";
-import { getCommunityModerators } from "@/lib/services/community-service";
+import { queryKeys } from "@/lib/query-keys";
+import {
+  getCommunityModerators,
+  joinCommunity,
+  leaveCommunity,
+  type CommunityDetail,
+  type CommunityViewerState,
+} from "@/lib/services/community-service";
 import { useToast } from "@/hooks/use-toast";
-import type { Community } from "@/types";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AuthorHoverCard } from "@/components/feed/author-hover-card";
 
-export function CommunityHero({ community }: { community: Community }) {
+export function CommunityHero({
+  community,
+  viewer,
+}: {
+  community: CommunityDetail;
+  viewer: CommunityViewerState | null;
+}) {
   const toast = useToast((state) => state.toast);
-  const [isJoined, setIsJoined] = useState(false);
+  const queryClient = useQueryClient();
+  const [isJoined, setIsJoined] = useState(viewer?.isMember ?? false);
+
   const { data: moderators } = useQuery({
-    queryKey: ["communityModerators", community.id],
-    queryFn: () => getCommunityModerators(community),
+    queryKey: queryKeys.communityModerators(community.slug),
+    queryFn: () => getCommunityModerators(community.slug),
   });
 
-  function handleJoinToggle() {
-    setIsJoined((prev) => !prev);
-    toast({
-      title: isJoined ? "Left community" : "Joined community",
-      description: isJoined
-        ? `You left ${community.name}.`
-        : `Welcome to ${community.name}!`,
-    });
-  }
+  const membership = useMutation({
+    /**
+     * The two endpoints answer with different shapes — join returns the
+     * refreshed viewer state, leave returns `{ left }` — so both are
+     * normalised here to the one fact this component needs.
+     */
+    mutationFn: async (join: boolean): Promise<{ isMember: boolean }> => {
+      if (join) {
+        const viewerState = await joinCommunity(community.slug);
+        return { isMember: viewerState.isMember };
+      }
+      const { left } = await leaveCommunity(community.slug);
+      return { isMember: !left };
+    },
+    onSuccess: (result, join) => {
+      setIsJoined(result.isMember);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.community(community.slug),
+      });
+      toast({
+        title: join ? "Joined community" : "Left community",
+        description: join
+          ? `Welcome to ${community.name}!`
+          : `You left ${community.name}.`,
+      });
+    },
+    onError: (error) => {
+      toast({
+        variant: "danger",
+        title: "That did not go through",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    },
+  });
+
+  /**
+   * The button is shown only when the server says this viewer can act.
+   *
+   * `canJoin` is false for a private community and for someone already inside,
+   * so a member sees "Joined" (leave) and a non-member of a private community
+   * sees nothing — rather than a button whose only possible outcome is a 403.
+   */
+  const canAct = viewer !== null && (isJoined || viewer.canJoin);
 
   return (
     <div>
@@ -52,10 +101,16 @@ export function CommunityHero({ community }: { community: Community }) {
           <AvatarFallback className="text-2xl">{community.name.charAt(0)}</AvatarFallback>
         </Avatar>
 
-        <div className="flex justify-end pt-4">
-          <Button variant={isJoined ? "secondary" : "primary"} onClick={handleJoinToggle}>
-            {isJoined ? "Joined" : "Join community"}
-          </Button>
+        <div className="flex min-h-9 justify-end pt-4">
+          {canAct && (
+            <Button
+              variant={isJoined ? "secondary" : "primary"}
+              disabled={membership.isPending}
+              onClick={() => membership.mutate(!isJoined)}
+            >
+              {isJoined ? "Joined" : "Join community"}
+            </Button>
+          )}
         </div>
 
         <div className="mt-6 sm:mt-2">

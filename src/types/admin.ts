@@ -25,10 +25,21 @@ export interface Report {
   createdAt: ISODateString;
 }
 
+/**
+ * A report with its participants resolved.
+ *
+ * `reporter` is nullable — a report outlives its reporter's account — and
+ * there is deliberately **no `targetSummary`**: the API serves no snippet of
+ * the reported content, because building one would mean projecting the text of
+ * a private project or a direct message into a moderation response. The queue
+ * identifies what was reported; staff open the target to read it.
+ *
+ * `ModerationReport` (`lib/services/admin-service.ts`) extends this with the
+ * review fields the API also carries.
+ */
 export interface ReportWithDetails extends Report {
-  reporter: PostAuthor;
+  reporter: PostAuthor | null;
   targetAuthor: PostAuthor | null;
-  targetSummary: string;
 }
 
 /** PRD.md §4.12 "Ban Users" / "Shadow Ban" — a user's moderation state,

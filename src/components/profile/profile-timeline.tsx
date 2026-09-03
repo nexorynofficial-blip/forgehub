@@ -7,7 +7,13 @@ import type { LucideIcon } from "lucide-react";
 import { formatRelativeTime } from "@/lib/format";
 import { getProfileTimeline } from "@/lib/services/profile-service";
 import type { ActivityItem, ActivityKind } from "@/types";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const KIND_ICON: Record<ActivityKind, LucideIcon> = {
@@ -55,6 +61,12 @@ export function ProfileTimeline({ username }: { username: string }) {
     <Card>
       <CardHeader>
         <CardTitle>Timeline</CardTitle>
+        {/* No profile-activity endpoint exists. `/users/{username}/posts` is a
+            post list, not a timeline, and mapping one onto the other would
+            fabricate semantics the API never promised. */}
+        <CardDescription>
+          Sample data — profile activity isn&apos;t live yet.
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {isLoading || !timeline ? (

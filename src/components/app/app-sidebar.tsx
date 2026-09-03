@@ -16,9 +16,10 @@ import {
 } from "lucide-react";
 
 import { isAdminRole } from "@/lib/rbac";
+import { queryKeys } from "@/lib/query-keys";
 import { routes } from "@/lib/routes";
 import { getCurrentUser } from "@/lib/services/user-service";
-import { getRecentConversations } from "@/lib/services/dashboard-service";
+import { getConversations } from "@/lib/services/messaging-service";
 import { useLockBodyScroll } from "@/hooks/use-lock-body-scroll";
 import { useUIStore } from "@/store/ui-store";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -39,15 +40,22 @@ function Logo() {
 
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const { data: user, isLoading } = useQuery({
-    queryKey: ["currentUser"],
+    queryKey: queryKeys.currentUser,
     queryFn: getCurrentUser,
   });
+
+  // The same query the topbar badge reads, so the two counts cannot disagree.
+  // `SocketProvider` invalidates this key on every message event.
   const { data: conversations } = useQuery({
-    queryKey: ["recentConversations"],
-    queryFn: getRecentConversations,
+    queryKey: queryKeys.conversations,
+    queryFn: () => getConversations(),
   });
 
-  const unreadMessages = conversations?.reduce((sum, c) => sum + c.unreadCount, 0) ?? 0;
+  const unreadMessages =
+    conversations?.items.reduce(
+      (sum, conversation) => sum + conversation.unreadCount,
+      0,
+    ) ?? 0;
 
   return (
     <div className="flex h-full flex-col">

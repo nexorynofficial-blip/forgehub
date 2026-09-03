@@ -36,27 +36,37 @@ function ActivityRow({ item }: { item: ActivityItem }) {
   );
 }
 
-/** UI_UX.md §6 "Live Activity Feed". Also reused as the dashboard's Feed
- * widget (UI_UX.md §7) via ActivityFeedWidget — same data, same component,
- * just a wider `className` for the grid cell. */
+/**
+ * UI_UX.md §6 "Live Activity Feed", also reused as the dashboard's activity
+ * widget via `ActivityFeedWidget`.
+ *
+ * **No backend endpoint exists** for a public or personal activity stream, so
+ * the service returns nothing and this renders an unavailable state. The
+ * pulsing "Live" indicator is hidden while there is nothing live to show —
+ * leaving it animating above an empty card would be the most literal possible
+ * claim of realtime data that is not there.
+ */
 export function LiveActivityFeed({ className }: { className?: string }) {
   const { data: activity, isLoading } = useQuery({
     queryKey: ["recentActivity"],
     queryFn: getRecentActivity,
-    refetchInterval: 60_000,
   });
+
+  const hasActivity = (activity?.length ?? 0) > 0;
 
   return (
     <Card className={cn("glass w-full max-w-md", className)}>
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>Live activity</CardTitle>
-        <span className="text-success flex items-center gap-1.5 text-xs font-medium">
-          <span className="bg-success relative flex size-2">
-            <span className="bg-success absolute inline-flex size-full animate-ping rounded-full opacity-75" />
-            <span className="bg-success relative inline-flex size-2 rounded-full" />
+        {hasActivity && (
+          <span className="text-success flex items-center gap-1.5 text-xs font-medium">
+            <span className="bg-success relative flex size-2">
+              <span className="bg-success absolute inline-flex size-full animate-ping rounded-full opacity-75" />
+              <span className="bg-success relative inline-flex size-2 rounded-full" />
+            </span>
+            Live
           </span>
-          Live
-        </span>
+        )}
       </CardHeader>
       <CardContent>
         {isLoading || !activity ? (
@@ -68,6 +78,10 @@ export function LiveActivityFeed({ className }: { className?: string }) {
               </li>
             ))}
           </ul>
+        ) : !hasActivity ? (
+          <p className="text-muted-foreground py-6 text-center text-sm">
+            Activity feeds are not available yet.
+          </p>
         ) : (
           <ul className="divide-border divide-y">
             {activity.map((item) => (

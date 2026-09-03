@@ -37,7 +37,14 @@ function EventRow({ event }: { event: UpcomingEvent }) {
   );
 }
 
-/** UI_UX.md §7 "Upcoming Events" (PRD.md §4.6 Community Events). */
+/**
+ * UI_UX.md §7 "Upcoming Events" (PRD.md §4.6 Community Events).
+ *
+ * Events exist per community; there is no global upcoming-events endpoint, and
+ * fanning out across every community the user belongs to would be an unbounded
+ * number of requests standing in for a missing API. The card reports that
+ * plainly instead.
+ */
 export function UpcomingEventsWidget() {
   const { data: events, isLoading } = useQuery({
     queryKey: ["upcomingEvents"],
@@ -59,6 +66,10 @@ export function UpcomingEventsWidget() {
               </li>
             ))}
           </ul>
+        ) : events.length === 0 ? (
+          <p className="text-muted-foreground py-6 text-center text-sm">
+            A combined events calendar is not available yet.
+          </p>
         ) : (
           <ul className="divide-border divide-y">
             {events.map((event) => (

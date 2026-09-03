@@ -2,6 +2,8 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { apiErrorMessage } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import {
   getBlockedUsers,
   getPrivacySettings,
@@ -34,11 +36,13 @@ function ToggleRow({
   description,
   checked,
   onCheckedChange,
+  disabled = false,
 }: {
   label: string;
   description?: string;
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-4 py-3">
@@ -46,7 +50,12 @@ function ToggleRow({
         <p className="text-sm font-medium">{label}</p>
         {description && <p className="text-muted-foreground text-xs">{description}</p>}
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} aria-label={label} />
+      <Switch
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        disabled={disabled}
+        aria-label={label}
+      />
     </div>
   );
 }
@@ -58,24 +67,45 @@ export function PrivacyForm() {
   const toast = useToast((state) => state.toast);
   const queryClient = useQueryClient();
   const { data: settings, isLoading } = useQuery({
-    queryKey: ["privacySettings"],
+    queryKey: queryKeys.userSettings,
     queryFn: getPrivacySettings,
   });
   const { data: blockedUsers, isLoading: isLoadingBlocked } = useQuery({
-    queryKey: ["blockedUsers"],
+    queryKey: queryKeys.blockedUsers,
     queryFn: getBlockedUsers,
   });
 
   async function handleUpdate(patch: Partial<PrivacySettings>) {
-    await updatePrivacySettings(patch);
-    queryClient.invalidateQueries({ queryKey: ["privacySettings"] });
-    toast({ title: "Privacy settings updated" });
+    try {
+      await updatePrivacySettings(patch);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.userSettings });
+      toast({ title: "Privacy settings updated" });
+    } catch (error) {
+      toast({
+        variant: "danger",
+        title: "Could not save that setting",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    }
   }
 
-  async function handleUnblock(userId: string, name: string) {
-    await unblockUser(userId);
-    queryClient.invalidateQueries({ queryKey: ["blockedUsers"] });
-    toast({ title: "Unblocked", description: `${name} can interact with you again.` });
+  /**
+   * Unblocking is addressed by **username** — `DELETE /users/{username}/block`.
+   * The old mock took an id, which had nowhere to go; every blocked record
+   * already carries the handle, so that is what is passed.
+   */
+  async function handleUnblock(username: string, name: string) {
+    try {
+      await unblockUser(username);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.blockedUsers });
+      toast({ title: "Unblocked", description: `${name} can interact with you again.` });
+    } catch (error) {
+      toast({
+        variant: "danger",
+        title: "Could not unblock",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    }
   }
 
   if (isLoading || !settings) {
@@ -142,11 +172,19 @@ export function PrivacyForm() {
             </Select>
           </div>
 
+          {/*
+            Read-only on purpose. The backend refuses `twoFactorEnabled` on this
+            endpoint — turning 2FA on means proving you hold the authenticator
+            via `/auth/2fa/setup` + `/auth/2fa/confirm`, and turning it off
+            needs your password. Neither has an enrolment screen yet, so the row
+            reports the real state rather than offering a switch that would fail.
+          */}
           <ToggleRow
             label="Two-factor authentication"
-            description="Require a verification code when signing in."
+            description="Enrolment isn't available in the web app yet."
             checked={settings.twoFactorEnabled}
-            onCheckedChange={(checked) => handleUpdate({ twoFactorEnabled: checked })}
+            disabled
+            onCheckedChange={() => undefined}
           />
         </CardContent>
       </Card>
@@ -175,11 +213,14 @@ export function PrivacyForm() {
                   </Avatar>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{user.displayName}</p>
+                    <p className="text-muted-foreground truncate text-xs">
+                      @{user.username}
+                    </p>
                   </div>
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => handleUnblock(user.id, user.displayName)}
+                    onClick={() => void handleUnblock(user.username, user.displayName)}
                   >
                     Unblock
                   </Button>

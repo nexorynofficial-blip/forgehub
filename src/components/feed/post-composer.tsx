@@ -1,18 +1,20 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery, useQueryClient, type InfiniteData } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 
-import { createPost } from "@/lib/services/feed-service";
+import { apiErrorMessage } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
+import { createPost, type FeedPost } from "@/lib/services/feed-service";
 import { getCurrentUser } from "@/lib/services/user-service";
-import type {
-  FeedFilter,
-  Paginated,
-  PostAuthor,
-  PostType,
-  PostWithAuthor,
-} from "@/types";
+import { useToast } from "@/hooks/use-toast";
+import type { FeedFilter, Paginated, PostType } from "@/types";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -31,48 +33,55 @@ const POST_TYPE_OPTIONS: { value: PostType; label: string }[] = [
   { value: "milestone", label: "Milestone" },
 ];
 
-/** Prepends the new post directly into the active filter's cached first
- * page — no `createPost` mutation would otherwise show up in a sorted/
- * filtered feed without a full refetch. */
+/**
+ * Prepends the newly created post into the active filter's cached first page.
+ *
+ * Still a cache write rather than a refetch, for the reason it always was: a
+ * brand-new post will not appear at the top of a `trending` sort, and dropping
+ * it would look like the post failed. The difference now is that the object
+ * being prepended is the server's own response — real id, real timestamp, real
+ * author — so there is nothing to reconcile later.
+ */
 export function PostComposer({ activeFilter }: { activeFilter: FeedFilter }) {
+  const toast = useToast((state) => state.toast);
   const queryClient = useQueryClient();
   const { data: currentUser } = useQuery({
-    queryKey: ["currentUser"],
+    queryKey: queryKeys.currentUser,
     queryFn: getCurrentUser,
   });
   const [content, setContent] = useState("");
   const [type, setType] = useState<PostType>("text");
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  async function handleSubmit() {
+  const publish = useMutation({
+    mutationFn: (draft: { content: string; type: PostType }) => createPost(draft),
+    onSuccess: (post) => {
+      queryClient.setQueryData<InfiniteData<Paginated<FeedPost>>>(
+        queryKeys.feed(activeFilter),
+        (data) => {
+          if (!data || data.pages.length === 0) return data;
+          const [firstPage, ...rest] = data.pages;
+          return {
+            ...data,
+            pages: [{ ...firstPage, items: [post, ...firstPage.items] }, ...rest],
+          };
+        },
+      );
+      setContent("");
+      setType("text");
+    },
+    onError: (error) => {
+      toast({
+        variant: "danger",
+        title: "Could not publish that post",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    },
+  });
+
+  function handleSubmit() {
     const trimmed = content.trim();
-    if (!trimmed || !currentUser) return;
-
-    setIsSubmitting(true);
-    const author: PostAuthor = {
-      id: currentUser.id,
-      username: currentUser.username,
-      displayName: currentUser.displayName,
-      avatarUrl: currentUser.avatarUrl,
-      builderRank: currentUser.builderRank,
-    };
-    const post = await createPost({ content: trimmed, type, author });
-
-    queryClient.setQueryData<InfiniteData<Paginated<PostWithAuthor>>>(
-      ["feed", activeFilter],
-      (data) => {
-        if (!data) return data;
-        const [firstPage, ...rest] = data.pages;
-        return {
-          ...data,
-          pages: [{ ...firstPage, items: [post, ...firstPage.items] }, ...rest],
-        };
-      },
-    );
-
-    setContent("");
-    setType("text");
-    setIsSubmitting(false);
+    if (!trimmed) return;
+    publish.mutate({ content: trimmed, type });
   }
 
   if (!currentUser) return null;
@@ -105,8 +114,11 @@ export function PostComposer({ activeFilter }: { activeFilter: FeedFilter }) {
                 ))}
               </SelectContent>
             </Select>
-            <Button onClick={handleSubmit} disabled={!content.trim() || isSubmitting}>
-              {isSubmitting && <Loader2 className="size-4 animate-spin" />}
+            <Button
+              onClick={handleSubmit}
+              disabled={!content.trim() || publish.isPending}
+            >
+              {publish.isPending && <Loader2 className="size-4 animate-spin" />}
               Post
             </Button>
           </div>

@@ -6,10 +6,13 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm, useWatch } from "react-hook-form";
 import { Loader2 } from "lucide-react";
 
+import { ApiError, apiErrorMessage, applyApiFieldErrors } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import {
   changePassword,
   getCurrentUser,
   updateCurrentUser,
+  type CurrentUser,
 } from "@/lib/services/user-service";
 import {
   accountSchema,
@@ -17,8 +20,8 @@ import {
   type AccountValues,
   type ChangePasswordValues,
 } from "@/lib/validations/settings";
+import { useAuth } from "@/providers/auth-provider";
 import { useToast } from "@/hooks/use-toast";
-import type { User } from "@/types";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -44,12 +47,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { PasswordInput } from "@/components/auth/password-input";
 import { PasswordStrengthMeter } from "@/components/auth/password-strength-meter";
 
-function ProfileFieldsForm({ user }: { user: User }) {
+function ProfileFieldsForm({ user }: { user: CurrentUser }) {
   const toast = useToast((state) => state.toast);
   const queryClient = useQueryClient();
+  const { updateSessionUser } = useAuth();
   const {
     register,
     handleSubmit,
+    setError,
     formState: { errors, isSubmitting },
   } = useForm<AccountValues>({
     resolver: zodResolver(accountSchema),
@@ -67,28 +72,81 @@ function ProfileFieldsForm({ user }: { user: User }) {
   });
 
   async function onSubmit(values: AccountValues) {
-    await updateCurrentUser({
-      displayName: values.displayName,
-      username: values.username,
-      email: values.email,
-      bio: values.bio,
-      experienceYears:
-        values.experienceYears === "" ? null : Number(values.experienceYears),
-      socialLinks: [
-        ...(values.githubUrl ? [{ platform: "github", url: values.githubUrl }] : []),
-        ...(values.xUrl ? [{ platform: "x", url: values.xUrl }] : []),
-      ],
-      skills: values.skills
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-      techStack: values.techStack
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-    });
-    queryClient.invalidateQueries({ queryKey: ["currentUser"] });
-    toast({ title: "Profile updated", description: "Your changes have been saved." });
+    try {
+      // One PATCH carries the whole form, username included: the backend's
+      // `updateProfileSchema` accepts exactly this payload and routes a changed
+      // handle through the same rename path as the dedicated endpoint.
+      const updated = await updateCurrentUser({
+        displayName: values.displayName,
+        username: values.username,
+        email: values.email,
+        bio: values.bio,
+        experienceYears:
+          values.experienceYears === "" ? null : Number(values.experienceYears),
+        socialLinks: [
+          ...(values.githubUrl ? [{ platform: "github", url: values.githubUrl }] : []),
+          ...(values.xUrl ? [{ platform: "x", url: values.xUrl }] : []),
+        ],
+        skills: values.skills
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        techStack: values.techStack
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      });
+
+      // The sidebar, user menu and every `routes.profile(username)` link render
+      // from the session user, which is a different view of the same person.
+      // Without this the shell would keep showing the old name until a reload —
+      // and a renamed account's profile links would 404.
+      updateSessionUser({
+        username: updated.username,
+        displayName: updated.displayName,
+        avatarUrl: updated.avatarUrl,
+        bannerUrl: updated.bannerUrl,
+        bio: updated.bio,
+      });
+
+      void queryClient.invalidateQueries({ queryKey: queryKeys.currentUser });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.profile(updated.username),
+      });
+      toast({ title: "Profile updated", description: "Your changes have been saved." });
+    } catch (error) {
+      // A taken username is a 409 with no field detail, so it is steered onto
+      // the input that caused it rather than left as an anonymous toast.
+      if (error instanceof ApiError && error.isConflict) {
+        setError("username", {
+          type: "server",
+          message: apiErrorMessage(error, "That username is already taken."),
+        });
+        return;
+      }
+
+      if (
+        applyApiFieldErrors(error, setError, [
+          "displayName",
+          "username",
+          "email",
+          "bio",
+          "experienceYears",
+          "githubUrl",
+          "xUrl",
+          "skills",
+          "techStack",
+        ])
+      ) {
+        return;
+      }
+
+      toast({
+        variant: "danger",
+        title: "Could not save your profile",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    }
   }
 
   return (
@@ -231,6 +289,7 @@ function ChangePasswordForm() {
     control,
     handleSubmit,
     reset,
+    setError,
     formState: { errors, isSubmitting },
   } = useForm<ChangePasswordValues>({
     resolver: zodResolver(changePasswordSchema),
@@ -239,12 +298,50 @@ function ChangePasswordForm() {
   const newPassword = useWatch({ control, name: "newPassword" });
 
   async function onSubmit(values: ChangePasswordValues) {
-    await changePassword(values.currentPassword, values.newPassword);
-    toast({
-      title: "Password updated",
-      description: "Use your new password next time you sign in.",
-    });
-    reset();
+    try {
+      // All three fields go to the server: its `changePasswordSchema` re-checks
+      // that the two new ones match, and that comparison is the server's to
+      // make, not something the form should be trusted to have done.
+      await changePassword(
+        values.currentPassword,
+        values.newPassword,
+        values.confirmNewPassword,
+      );
+      toast({
+        title: "Password updated",
+        description: "Use your new password next time you sign in.",
+      });
+      reset();
+    } catch (error) {
+      // A wrong current password comes back 401 ("Current password is
+      // incorrect") with no field detail, so it is steered onto that input.
+      // The client will have spent one refresh round-trip first — it cannot
+      // tell this apart from an expired token until it retries, which is the
+      // correct trade.
+      if (error instanceof ApiError && error.isUnauthenticated) {
+        setError("currentPassword", {
+          type: "server",
+          message: apiErrorMessage(error, "That password is incorrect."),
+        });
+        return;
+      }
+
+      if (
+        applyApiFieldErrors(error, setError, [
+          "currentPassword",
+          "newPassword",
+          "confirmNewPassword",
+        ])
+      ) {
+        return;
+      }
+
+      toast({
+        variant: "danger",
+        title: "Could not update your password",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    }
   }
 
   return (
@@ -357,7 +454,7 @@ function DangerZone() {
 
 export function AccountForm() {
   const { data: user, isLoading } = useQuery({
-    queryKey: ["currentUser"],
+    queryKey: queryKeys.currentUser,
     queryFn: getCurrentUser,
   });
 

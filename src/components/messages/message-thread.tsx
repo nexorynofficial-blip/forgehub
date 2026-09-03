@@ -2,24 +2,20 @@
 
 import { useEffect, useRef } from "react";
 import Link from "next/link";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 
 import { getConversationLabel } from "@/lib/messaging";
+import { queryKeys } from "@/lib/query-keys";
 import { routes } from "@/lib/routes";
 import {
-  checkTypingIndicator,
   getMessages,
-  getOnlineUserIds,
+  markConversationRead,
   sendMessage,
+  type Conversation,
 } from "@/lib/services/messaging-service";
 import { getCurrentUser } from "@/lib/services/user-service";
-import type {
-  ConversationWithParticipants,
-  MessageAttachment,
-  MessageWithSender,
-  PostAuthor,
-} from "@/types";
+import { useSocket } from "@/providers/socket-provider";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -28,59 +24,89 @@ import { MessageBubble } from "@/components/messages/message-bubble";
 import { MessageComposer } from "@/components/messages/message-composer";
 import { TypingIndicator } from "@/components/messages/typing-indicator";
 
-/** UI_UX.md's "Discord-style" brief — Card fills its column of
- * `MessagesShell`'s fixed-height layout; header, scrollable messages, and
- * composer split via flex so only the message list scrolls. */
-export function MessageThread({
-  conversation,
-}: {
-  conversation: ConversationWithParticipants;
-}) {
+/**
+ * UI_UX.md's "Discord-style" thread — same layout, real data underneath.
+ *
+ * Two structural facts drive the code below:
+ *
+ *  - History is **cursor-paginated newest-first**, so the fetched order is the
+ *    reverse of the display order and the list is reversed once for rendering.
+ *  - New messages arrive over the socket, not from a refetch. `SocketProvider`
+ *    writes them into this exact query key, so nothing here polls.
+ */
+export function MessageThread({ conversation }: { conversation: Conversation }) {
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const {
+    onlineUserIds,
+    typingByConversation,
+    joinConversation,
+    leaveConversation,
+    emitTyping,
+    isConnected,
+  } = useSocket();
+
   const { data: currentUser } = useQuery({
-    queryKey: ["currentUser"],
+    queryKey: queryKeys.currentUser,
     queryFn: getCurrentUser,
   });
-  const { data: messages, isLoading } = useQuery({
-    queryKey: ["messages", conversation.id],
-    queryFn: () => getMessages(conversation.id),
+
+  const { data, isLoading } = useInfiniteQuery({
+    queryKey: queryKeys.messages(conversation.id),
+    queryFn: ({ pageParam }) =>
+      getMessages(conversation.id, { cursor: pageParam ?? undefined }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
   });
-  const { data: onlineIds } = useQuery({
-    queryKey: ["onlineUserIds"],
-    queryFn: getOnlineUserIds,
-  });
-  const { data: typingPerson } = useQuery({
-    queryKey: ["typingIndicator", conversation.id],
-    queryFn: () => checkTypingIndicator(conversation),
-    refetchInterval: 5_000,
-  });
+
+  /**
+   * Join the conversation room, and leave it on the way out.
+   *
+   * The room is what scopes typing indicators; without joining, this thread
+   * would receive `message:new` (addressed to the user room) but never see
+   * anyone typing. The join is authorized server-side against membership, so a
+   * request for someone else's conversation is refused rather than trusted.
+   */
+  useEffect(() => {
+    if (!isConnected) return;
+    joinConversation(conversation.id);
+    return () => leaveConversation(conversation.id);
+  }, [isConnected, conversation.id, joinConversation, leaveConversation]);
+
+  /** Opening a thread is what marks it read; the server owns the watermark. */
+  useEffect(() => {
+    void markConversationRead(conversation.id)
+      .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.conversations }))
+      .catch(() => undefined);
+  }, [conversation.id, queryClient]);
+
+  // Fetched newest-first, rendered oldest-first.
+  const messages = (data?.pages.flatMap((page) => page.items) ?? []).slice().reverse();
+  const typingUsernames = typingByConversation[conversation.id] ?? [];
 
   useEffect(() => {
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [messages?.length, typingPerson]);
+  }, [messages.length, typingUsernames.length]);
 
-  async function handleSend(content: string, attachments: MessageAttachment[]) {
-    if (!currentUser) return;
-    const author: PostAuthor = {
-      id: currentUser.id,
-      username: currentUser.username,
-      displayName: currentUser.displayName,
-      avatarUrl: currentUser.avatarUrl,
-      builderRank: currentUser.builderRank,
-    };
-    const message = await sendMessage(conversation.id, content, author, attachments);
-    queryClient.setQueryData<MessageWithSender[]>(
-      ["messages", conversation.id],
-      (prev) => [...(prev ?? []), message],
-    );
-    queryClient.invalidateQueries({ queryKey: ["conversations"] });
+  /**
+   * Sent over REST rather than the socket.
+   *
+   * Both paths persist and both fan out `message:new`, but REST reports a
+   * refusal — a block, a contact policy — as a status code the UI can render.
+   * The server's own `message:new` echo is what lands the message in the list,
+   * and `SocketProvider` de-duplicates by id.
+   */
+  async function handleSend(content: string) {
+    await sendMessage(conversation.id, content);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
   }
 
-  const isOnline = conversation.participants.some((person) => onlineIds?.has(person.id));
+  const isOnline = conversation.participants.some((person) =>
+    onlineUserIds.has(person.id),
+  );
   const label = getConversationLabel(conversation);
 
   return (
@@ -109,12 +135,16 @@ export function MessageThread({
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
-        {isLoading || !messages ? (
+        {isLoading ? (
           <div className="flex flex-col gap-4">
             {Array.from({ length: 3 }).map((_, i) => (
               <Skeleton key={i} className="h-12 w-2/3" />
             ))}
           </div>
+        ) : messages.length === 0 ? (
+          <p className="text-muted-foreground py-8 text-center text-sm">
+            No messages yet — say hello.
+          </p>
         ) : (
           <div className="flex flex-col gap-3">
             {messages.map((message, index) => {
@@ -140,12 +170,15 @@ export function MessageThread({
                 />
               );
             })}
-            {typingPerson && <TypingIndicator person={typingPerson} />}
+            <TypingIndicator usernames={typingUsernames} />
           </div>
         )}
       </div>
 
-      <MessageComposer onSend={handleSend} />
+      <MessageComposer
+        onSend={handleSend}
+        onTyping={(typing) => emitTyping(conversation.id, typing)}
+      />
     </Card>
   );
 }

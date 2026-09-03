@@ -1,53 +1,110 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Send } from "lucide-react";
 
+import { apiErrorMessage } from "@/lib/api";
 import { formatRelativeTime } from "@/lib/format";
-import { addComment, getCommentsForPost } from "@/lib/services/feed-service";
-import { getCurrentUser } from "@/lib/services/user-service";
-import type { CommentWithAuthor, PostAuthor } from "@/types";
+import { queryKeys } from "@/lib/query-keys";
+import {
+  addComment,
+  getCommentsForPost,
+  type CommentPage,
+  type FeedComment,
+} from "@/lib/services/feed-service";
+import { useToast } from "@/hooks/use-toast";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 
-/** UI_UX.md §10 "Live Comments" (no real WebSocket push yet — see
- * docs/ASSUMPTIONS.md; this is the optimistic add path). */
+/**
+ * One comment row.
+ *
+ * A soft-deleted comment that still has live replies comes back as a
+ * tombstone: `isDeleted: true` and **no author at all**. It is still rendered
+ * so its replies do not become unreachable, but it discloses nothing about who
+ * wrote it — which is the whole point of the tombstone.
+ */
+function CommentRow({ comment }: { comment: FeedComment }) {
+  if (comment.isDeleted || !comment.author) {
+    return (
+      <li className="flex gap-2.5">
+        <div className="bg-muted size-8 shrink-0 rounded-full" aria-hidden="true" />
+        <div className="bg-surface text-muted-foreground min-w-0 flex-1 rounded-md px-3 py-2 text-sm italic">
+          This comment was deleted.
+        </div>
+      </li>
+    );
+  }
+
+  const { author } = comment;
+
+  return (
+    <li className="flex gap-2.5">
+      <Avatar className="size-8 shrink-0">
+        <AvatarImage src={author.avatarUrl ?? undefined} alt="" />
+        <AvatarFallback className="text-xs">
+          {author.displayName.charAt(0)}
+        </AvatarFallback>
+      </Avatar>
+      <div className="bg-surface min-w-0 flex-1 rounded-md px-3 py-2">
+        <div className="flex items-baseline gap-2">
+          <p className="text-sm font-medium">{author.displayName}</p>
+          <time className="text-muted-foreground text-[11px]">
+            {formatRelativeTime(comment.createdAt)}
+          </time>
+        </div>
+        <p className="text-sm">{comment.content}</p>
+      </div>
+    </li>
+  );
+}
+
+/** UI_UX.md §10 "Live Comments" — real `POST /posts/{id}/comments`. */
 export function CommentSection({ postId }: { postId: string }) {
+  const toast = useToast((state) => state.toast);
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const { data: comments, isLoading } = useQuery({
-    queryKey: ["comments", postId],
+
+  const { data, isLoading } = useQuery({
+    queryKey: queryKeys.postComments(postId),
     queryFn: () => getCommentsForPost(postId),
   });
-  const { data: currentUser } = useQuery({
-    queryKey: ["currentUser"],
-    queryFn: getCurrentUser,
+
+  const comments = data?.comments;
+
+  /**
+   * The new comment is appended from the server's own response, so it carries
+   * the real id and timestamp. The author is not assembled here at all — the
+   * backend derives it from the access token, which is the only source that
+   * cannot be spoofed.
+   */
+  const post = useMutation({
+    mutationFn: (content: string) => addComment(postId, content),
+    onSuccess: (comment) => {
+      queryClient.setQueryData<CommentPage>(queryKeys.postComments(postId), (prev) =>
+        prev
+          ? { ...prev, comments: [...prev.comments, comment] }
+          : { comments: [comment], nextCursor: null },
+      );
+      setDraft("");
+    },
+    onError: (error) => {
+      toast({
+        variant: "danger",
+        title: "Could not post that comment",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    },
   });
 
-  async function handleSubmit(event: FormEvent) {
+  function handleSubmit(event: FormEvent) {
     event.preventDefault();
     const content = draft.trim();
-    if (!content || !currentUser) return;
-
-    setIsSubmitting(true);
-    const author: PostAuthor = {
-      id: currentUser.id,
-      username: currentUser.username,
-      displayName: currentUser.displayName,
-      avatarUrl: currentUser.avatarUrl,
-      builderRank: currentUser.builderRank,
-    };
-    const comment = await addComment(postId, content, author);
-    queryClient.setQueryData<CommentWithAuthor[]>(["comments", postId], (prev) => [
-      ...(prev ?? []),
-      comment,
-    ]);
-    setDraft("");
-    setIsSubmitting(false);
+    if (!content) return;
+    post.mutate(content);
   }
 
   return (
@@ -64,23 +121,7 @@ export function CommentSection({ postId }: { postId: string }) {
       ) : comments.length > 0 ? (
         <ul className="flex flex-col gap-3">
           {comments.map((comment) => (
-            <li key={comment.id} className="flex gap-2.5">
-              <Avatar className="size-8 shrink-0">
-                <AvatarImage src={comment.author.avatarUrl ?? undefined} alt="" />
-                <AvatarFallback className="text-xs">
-                  {comment.author.displayName.charAt(0)}
-                </AvatarFallback>
-              </Avatar>
-              <div className="bg-surface min-w-0 flex-1 rounded-md px-3 py-2">
-                <div className="flex items-baseline gap-2">
-                  <p className="text-sm font-medium">{comment.author.displayName}</p>
-                  <time className="text-muted-foreground text-[11px]">
-                    {formatRelativeTime(comment.createdAt)}
-                  </time>
-                </div>
-                <p className="text-sm">{comment.content}</p>
-              </div>
-            </li>
+            <CommentRow key={comment.id} comment={comment} />
           ))}
         </ul>
       ) : (
@@ -93,16 +134,16 @@ export function CommentSection({ postId }: { postId: string }) {
           onChange={(event) => setDraft(event.target.value)}
           placeholder="Write a comment…"
           aria-label="Write a comment"
-          disabled={isSubmitting}
+          disabled={post.isPending}
         />
         <Button
           type="submit"
           size="icon"
           variant="secondary"
-          disabled={!draft.trim() || isSubmitting}
+          disabled={!draft.trim() || post.isPending}
           aria-label="Post comment"
         >
-          {isSubmitting ? (
+          {post.isPending ? (
             <Loader2 className="size-4 animate-spin" />
           ) : (
             <Send className="size-4" />

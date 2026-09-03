@@ -2,25 +2,36 @@
 
 import { useQuery } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/query-keys";
 import { getProjectMembers } from "@/lib/services/project-service";
-import type { Project, ProjectMemberRole } from "@/types";
+import type { ProjectMemberRoleValue } from "@/types";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AuthorHoverCard } from "@/components/feed/author-hover-card";
 
-const ROLE_LABEL: Record<ProjectMemberRole, string> = {
+/**
+ * All six persisted roles, not just the three that are assignable.
+ *
+ * The backend returns a stored `admin`/`developer`/`designer` verbatim, so a
+ * three-key map would render an empty badge for those members. Typing the
+ * record over the full union makes that a build error rather than a blank.
+ */
+const ROLE_LABEL: Record<ProjectMemberRoleValue, string> = {
   owner: "Owner",
+  admin: "Admin",
+  developer: "Developer",
+  designer: "Designer",
   collaborator: "Collaborator",
   contributor: "Contributor",
 };
 
 /** UI_UX.md §9 "Team" (PRD.md §4.3 Team Members). */
-export function ProjectTeam({ project }: { project: Project }) {
+export function ProjectTeam({ slug }: { slug: string }) {
   const { data: members, isLoading } = useQuery({
-    queryKey: ["projectMembers", project.id],
-    queryFn: () => getProjectMembers(project),
+    queryKey: queryKeys.projectMembers(slug),
+    queryFn: () => getProjectMembers(slug),
   });
 
   return (

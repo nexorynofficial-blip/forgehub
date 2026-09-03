@@ -43,6 +43,20 @@ interface AuthContextValue {
   signup: (values: SignupValues) => Promise<SignupResult>;
   logout: () => Promise<void>;
   refreshSession: () => Promise<SessionUser | null>;
+  /**
+   * Folds a successful profile mutation back into the session user.
+   *
+   * `/users/me` and `/auth/*` return two different views of the same person,
+   * and the shell (avatar, display name, the `@handle` in the user menu, every
+   * `routes.profile(username)` link) renders from the session one. Without
+   * this, saving the account form would update the settings page and leave the
+   * sidebar showing the old name until the next reload.
+   *
+   * A patch rather than a whole user: the caller has a `CurrentUserView`, which
+   * is a superset with different owner-only fields, and only the keys the two
+   * views share are meaningful here.
+   */
+  updateSessionUser: (patch: Partial<SessionUser>) => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -156,6 +170,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return session;
   }, [resetSession]);
 
+  const updateSessionUser = useCallback((patch: Partial<SessionUser>) => {
+    setUser((current) => (current ? { ...current, ...patch } : current));
+  }, []);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       status,
@@ -166,8 +184,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signup,
       logout,
       refreshSession,
+      updateSessionUser,
     }),
-    [status, user, login, verifyTwoFactor, signup, logout, refreshSession],
+    [
+      status,
+      user,
+      login,
+      verifyTwoFactor,
+      signup,
+      logout,
+      refreshSession,
+      updateSessionUser,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

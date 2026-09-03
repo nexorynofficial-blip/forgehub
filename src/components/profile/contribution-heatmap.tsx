@@ -5,7 +5,13 @@ import { useQuery } from "@tanstack/react-query";
 import { getContributionGraph } from "@/lib/services/profile-service";
 import { cn } from "@/lib/utils";
 import type { ContributionDay } from "@/types";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -37,6 +43,12 @@ export function ContributionHeatmap({ username }: { username: string }) {
     <Card>
       <CardHeader>
         <CardTitle>Contribution activity</CardTitle>
+        {/* The backend exposes no contribution-graph endpoint, and deriving one
+            from unrelated data would be inventing a feature. Said plainly here
+            so the grid is never mistaken for this account's real activity. */}
+        <CardDescription>
+          Sample data — activity tracking isn&apos;t live yet.
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {isLoading || !days ? (

@@ -3,24 +3,39 @@
 import { Fragment, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { apiErrorMessage } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
 import {
   getNotificationPreferences,
   updateNotificationPreference,
 } from "@/lib/services/settings-service";
+import { useToast } from "@/hooks/use-toast";
 import type { NotificationPreferences, NotificationType } from "@/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 
+/**
+ * All twelve types the API stores a preference for.
+ *
+ * The shipped screen offered eight, which left `reply`, `project_invite`,
+ * `community_invite` and `moderation` adjustable on the server but unreachable
+ * here — preferences the user is subject to and cannot change. The API returns
+ * a row for each, so each gets a row.
+ */
 const TYPE_LABEL: Record<NotificationType, string> = {
   like: "Likes",
   comment: "Comments",
+  reply: "Replies",
   mention: "Mentions",
   follower: "New followers",
   project_update: "Project updates",
   invite: "Collaboration invites",
+  project_invite: "Project invites",
+  community_invite: "Community invites",
   message: "Messages",
   achievement: "Achievements",
+  moderation: "Moderation notices",
 };
 
 const TYPES = Object.keys(TYPE_LABEL) as NotificationType[];
@@ -30,15 +45,34 @@ function NotificationsMatrix({
 }: {
   initialPreferences: NotificationPreferences;
 }) {
+  const toast = useToast((state) => state.toast);
   const [preferences, setPreferences] = useState(initialPreferences);
 
-  function handleToggle(
+  /**
+   * Optimistic, as before — a settings switch should move under the finger.
+   * The difference now is that the server gets the last word: its response is
+   * the whole updated matrix, and a failure puts the switch back rather than
+   * leaving the UI asserting something that was never saved.
+   */
+  async function handleToggle(
     type: NotificationType,
     channel: "inApp" | "email",
     value: boolean,
   ) {
+    const previous = preferences;
     setPreferences((prev) => ({ ...prev, [type]: { ...prev[type], [channel]: value } }));
-    updateNotificationPreference(type, channel, value);
+
+    try {
+      const saved = await updateNotificationPreference(type, channel, value);
+      setPreferences(saved);
+    } catch (error) {
+      setPreferences(previous);
+      toast({
+        variant: "danger",
+        title: "Could not save that preference",
+        description: apiErrorMessage(error, "Please try again in a moment."),
+      });
+    }
   }
 
   return (
@@ -52,14 +86,14 @@ function NotificationsMatrix({
           <span className="border-border flex justify-center border-t py-3">
             <Switch
               checked={preferences[type].inApp}
-              onCheckedChange={(checked) => handleToggle(type, "inApp", checked)}
+              onCheckedChange={(checked) => void handleToggle(type, "inApp", checked)}
               aria-label={`${TYPE_LABEL[type]} in-app notifications`}
             />
           </span>
           <span className="border-border flex justify-center border-t py-3">
             <Switch
               checked={preferences[type].email}
-              onCheckedChange={(checked) => handleToggle(type, "email", checked)}
+              onCheckedChange={(checked) => void handleToggle(type, "email", checked)}
               aria-label={`${TYPE_LABEL[type]} email notifications`}
             />
           </span>
@@ -78,7 +112,7 @@ function NotificationsMatrix({
  * click — see docs/ASSUMPTIONS.md (Phase 10). */
 export function NotificationsForm() {
   const { data: preferences, isLoading } = useQuery({
-    queryKey: ["notificationPreferences"],
+    queryKey: queryKeys.notificationPreferences,
     queryFn: getNotificationPreferences,
   });
 

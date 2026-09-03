@@ -6,13 +6,20 @@ import { useQuery } from "@tanstack/react-query";
 import { formatRelativeTime } from "@/lib/format";
 import { routes } from "@/lib/routes";
 import { getRecentConversations } from "@/lib/services/dashboard-service";
+import { useSocket } from "@/providers/socket-provider";
 import type { RecentConversationPreview } from "@/types";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 
-function ConversationRow({ conversation }: { conversation: RecentConversationPreview }) {
+function ConversationRow({
+  conversation,
+  isOnline,
+}: {
+  conversation: RecentConversationPreview;
+  isOnline: boolean;
+}) {
   return (
     <Link
       href={routes.conversation(conversation.id)}
@@ -23,7 +30,7 @@ function ConversationRow({ conversation }: { conversation: RecentConversationPre
           <AvatarImage src={conversation.participantAvatarUrl ?? undefined} alt="" />
           <AvatarFallback>{conversation.participantName.charAt(0)}</AvatarFallback>
         </Avatar>
-        {conversation.isOnline && (
+        {isOnline && (
           <span
             className="bg-success border-card absolute right-0 bottom-0 size-2.5 rounded-full border-2"
             aria-hidden="true"
@@ -48,11 +55,18 @@ function ConversationRow({ conversation }: { conversation: RecentConversationPre
   );
 }
 
-/** UI_UX.md §7 "Chat" — a preview, not the full Messaging experience (Phase 09). */
+/**
+ * UI_UX.md §7 "Chat" — a preview of the real conversation list.
+ *
+ * Presence is overlaid from the socket rather than read off the row: the
+ * service cannot subscribe to realtime events, so it reports `isOnline: false`
+ * and this component supplies the live answer.
+ */
 export function QuickMessagesWidget() {
+  const { onlineUserIds } = useSocket();
   const { data: conversations, isLoading } = useQuery({
     queryKey: ["recentConversations"],
-    queryFn: getRecentConversations,
+    queryFn: () => getRecentConversations(),
   });
 
   return (
@@ -67,16 +81,27 @@ export function QuickMessagesWidget() {
         </Link>
       </CardHeader>
       <CardContent className="flex flex-col gap-1">
-        {isLoading || !conversations
-          ? Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-3 p-2">
-                <Skeleton className="size-10 shrink-0 rounded-full" />
-                <Skeleton className="h-4 flex-1" />
-              </div>
-            ))
-          : conversations.map((conversation) => (
-              <ConversationRow key={conversation.id} conversation={conversation} />
-            ))}
+        {isLoading || !conversations ? (
+          Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3 p-2">
+              <Skeleton className="size-10 shrink-0 rounded-full" />
+              <Skeleton className="h-4 flex-1" />
+            </div>
+          ))
+        ) : conversations.length === 0 ? (
+          <p className="text-muted-foreground p-2 text-sm">No conversations yet.</p>
+        ) : (
+          conversations.map((conversation) => (
+            <ConversationRow
+              key={conversation.id}
+              conversation={conversation}
+              isOnline={
+                conversation.participantId !== null &&
+                onlineUserIds.has(conversation.participantId)
+              }
+            />
+          ))
+        )}
       </CardContent>
     </Card>
   );

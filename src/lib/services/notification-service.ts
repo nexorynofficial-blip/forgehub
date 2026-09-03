@@ -1,23 +1,71 @@
 import type { NotificationWithActor } from "@/types";
-import { mockNotifications } from "@/lib/mock/notifications";
+import { api } from "@/lib/api";
 
-/** Placeholder for the Notification API (TRD.md §5). Mutates the in-memory
- * fixture array directly — fine for a mock session, resets on reload; a
- * real implementation would call the API and let React Query invalidate. */
-const notifications = [...mockNotifications];
+/**
+ * Notifications (`backend/src/modules/notifications`).
+ *
+ * The backend's `NotificationView` carries both shapes the frontend might
+ * read: the flat `actorName`/`actorAvatarUrl` pair the shipped panel uses, and
+ * a richer nested `actor` for anything wanting a handle to link to. So
+ * `NotificationWithActor` needs no adapter.
+ *
+ * There is no create call and never will be: notifications are produced by the
+ * server in response to events, and the API exposes no endpoint to post one.
+ */
 
-/** Returns a fresh array reference every call — `notifications` is mutated
- * in place by `markAllNotificationsRead`, and React Query needs a new
- * top-level reference (not just changed nested fields) to know a refetch
- * actually produced different data and re-render subscribers. See
- * docs/ASSUMPTIONS.md (Phase 10). */
-export async function getNotifications(): Promise<NotificationWithActor[]> {
-  return [...notifications];
+/** Additive fields beyond the shipped `NotificationWithActor`. */
+export interface NotificationItem extends NotificationWithActor {
+  entityType: string | null;
+  readAt: string | null;
+  actor: {
+    id: string;
+    username: string;
+    displayName: string;
+    avatarUrl: string | null;
+  } | null;
 }
 
-export async function markAllNotificationsRead(): Promise<{ success: true }> {
-  notifications.forEach((notification) => {
-    notification.isRead = true;
+export interface NotificationPage {
+  items: NotificationItem[];
+  nextCursor: string | null;
+}
+
+/** `GET /notifications` — cursor-paginated, newest first. */
+export async function getNotifications(
+  options: { cursor?: string; limit?: number; unreadOnly?: boolean } = {},
+): Promise<NotificationPage> {
+  return api.get<NotificationPage>("/notifications", {
+    query: {
+      cursor: options.cursor,
+      limit: options.limit,
+      unreadOnly: options.unreadOnly,
+    },
   });
-  return { success: true };
+}
+
+/** `GET /notifications/unread` — just the badge number. */
+export async function getUnreadNotificationCount(): Promise<number> {
+  const { unreadCount } = await api.get<{ unreadCount: number }>("/notifications/unread");
+  return unreadCount;
+}
+
+/**
+ * `POST /notifications/{id}/read` — one row.
+ *
+ * The backend answers 404 for a notification belonging to someone else, so
+ * ownership needs no client-side check: there is nothing here to get wrong.
+ */
+export async function markNotificationRead(id: string): Promise<NotificationItem> {
+  const { notification } = await api.post<{ notification: NotificationItem }>(
+    `/notifications/${encodeURIComponent(id)}/read`,
+  );
+  return notification;
+}
+
+/** `POST /notifications/read-all` — returns how many rows actually flipped. */
+export async function markAllNotificationsRead(): Promise<{
+  markedRead: number;
+  unreadCount: number;
+}> {
+  return api.post("/notifications/read-all");
 }

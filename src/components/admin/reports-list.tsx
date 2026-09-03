@@ -1,100 +1,130 @@
 "use client";
 
-import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { updateReportStatus, updateUserStatus } from "@/lib/services/admin-service";
+import { apiErrorMessage } from "@/lib/api";
+import { queryKeys } from "@/lib/query-keys";
+import {
+  updateReportStatus,
+  updateUserStatus,
+  type ModerationReport,
+} from "@/lib/services/admin-service";
 import { useToast } from "@/hooks/use-toast";
-import type { ReportStatus, ReportWithDetails } from "@/types";
+import type { ModerationStatus, ReportStatus } from "@/types";
 import { Card } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ReportRow } from "@/components/admin/report-row";
 
-const FILTERS: { value: "all" | ReportStatus; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "pending", label: "Pending" },
-  { value: "resolved", label: "Resolved" },
-  { value: "dismissed", label: "Dismissed" },
-];
-
-/** PRD.md §4.12 "Moderation Queue" / "Flagged Posts" / "Content Removal" /
- * "Ban Users" / "Shadow Ban" — one connected workflow. Local optimistic
- * state seeded once from the query, per docs/ARCHITECTURE.md §15. */
-export function ReportsList({ initialReports }: { initialReports: ReportWithDetails[] }) {
+/**
+ * PRD.md §4.12 "Moderation Queue" — one connected workflow, now writing to the
+ * real backend.
+ *
+ * The list is no longer seeded into local state. Every mutation invalidates
+ * the queue instead, so what is on screen is what the server holds: a report
+ * whose status change was rejected must not stay flipped in the UI, and the
+ * old optimistic-only version had no path back from a failure.
+ */
+export function ReportsList({
+  reports,
+  filter,
+}: {
+  reports: ModerationReport[];
+  filter: "all" | ReportStatus;
+}) {
   const toast = useToast((state) => state.toast);
-  const [reports, setReports] = useState(initialReports);
-  const [filter, setFilter] = useState<"all" | ReportStatus>("all");
+  const queryClient = useQueryClient();
 
-  function updateStatus(id: string, status: ReportStatus) {
-    setReports((prev) =>
-      prev.map((report) => (report.id === id ? { ...report, status } : report)),
-    );
-    updateReportStatus(id, status);
+  function invalidate() {
+    void queryClient.invalidateQueries({ queryKey: ["moderation", "reports"] });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.adminStats });
   }
 
-  function handleDismiss(id: string) {
-    updateStatus(id, "dismissed");
-    toast({ title: "Report dismissed" });
-  }
-
-  function handleResolve(id: string) {
-    updateStatus(id, "resolved");
-    toast({ title: "Report resolved" });
-  }
-
-  function handleBanUser(report: ReportWithDetails) {
-    if (!report.targetAuthorId) return;
-    updateUserStatus(report.targetAuthorId, "banned");
-    updateStatus(report.id, "resolved");
+  function reportError(error: unknown) {
     toast({
-      title: "User banned",
-      description: `${report.targetAuthor?.displayName} can no longer access ForgeHub.`,
       variant: "danger",
+      title: "That action did not go through",
+      description: apiErrorMessage(error, "Please try again in a moment."),
     });
   }
 
-  function handleShadowBanUser(report: ReportWithDetails) {
-    if (!report.targetAuthorId) return;
-    updateUserStatus(report.targetAuthorId, "shadow_banned");
-    updateStatus(report.id, "resolved");
-    toast({
-      title: "User shadow banned",
-      description: `${report.targetAuthor?.displayName}'s content is now hidden from others.`,
-    });
-  }
+  const setStatus = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: ReportStatus }) =>
+      updateReportStatus(id, status),
+    onSuccess: (_result, { status }) => {
+      invalidate();
+      toast({ title: status === "resolved" ? "Report resolved" : "Report dismissed" });
+    },
+    onError: reportError,
+  });
 
-  const filtered =
-    filter === "all" ? reports : reports.filter((report) => report.status === filter);
+  /**
+   * Ban / shadow-ban.
+   *
+   * The status change and the report closure are two server calls and are
+   * awaited in order: closing the report first would leave a queue that claims
+   * the matter is handled if the ban then failed.
+   *
+   * The **target state** is what gets sent (`banned` / `shadow_banned`), which
+   * is how this UI has always been shaped and what the endpoint accepts. The
+   * backend maps it to the right moderation verb and records the action — this
+   * component does not re-derive that mapping.
+   */
+  const moderateUser = useMutation({
+    mutationFn: async ({
+      report,
+      status,
+    }: {
+      report: ModerationReport;
+      status: ModerationStatus;
+    }) => {
+      if (!report.targetAuthorId) throw new Error("This report has no target author.");
+      await updateUserStatus(report.targetAuthorId, status);
+      await updateReportStatus(report.id, "resolved");
+    },
+    onSuccess: (_result, { report, status }) => {
+      invalidate();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.adminUsers });
+      const name = report.targetAuthor?.displayName ?? "That user";
+      toast({
+        title: status === "banned" ? "User banned" : "User shadow banned",
+        description:
+          status === "banned"
+            ? `${name} can no longer access ForgeHub.`
+            : `${name}'s content is now hidden from others.`,
+        variant: status === "banned" ? "danger" : "default",
+      });
+    },
+    onError: reportError,
+  });
+
+  const isBusy = setStatus.isPending || moderateUser.isPending;
+
+  if (reports.length === 0) {
+    return (
+      <Card className="p-10 text-center">
+        <p className="text-muted-foreground text-sm">
+          {filter === "all" ? "No reports yet." : `No ${filter} reports.`}
+        </p>
+      </Card>
+    );
+  }
 
   return (
-    <div className="flex flex-col gap-4">
-      <Tabs value={filter} onValueChange={(value) => setFilter(value as typeof filter)}>
-        <TabsList>
-          {FILTERS.map((item) => (
-            <TabsTrigger key={item.value} value={item.value}>
-              {item.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
-
-      {filtered.length === 0 ? (
-        <Card className="p-10 text-center">
-          <p className="text-muted-foreground text-sm">No reports here.</p>
-        </Card>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {filtered.map((report) => (
-            <ReportRow
-              key={report.id}
-              report={report}
-              onDismiss={handleDismiss}
-              onResolve={handleResolve}
-              onBanUser={handleBanUser}
-              onShadowBanUser={handleShadowBanUser}
-            />
-          ))}
-        </div>
-      )}
+    <div className="flex flex-col gap-3">
+      {reports.map((report) => (
+        <ReportRow
+          key={report.id}
+          report={report}
+          disabled={isBusy}
+          onDismiss={(id) => setStatus.mutate({ id, status: "dismissed" })}
+          onResolve={(id) => setStatus.mutate({ id, status: "resolved" })}
+          onBanUser={(target) =>
+            moderateUser.mutate({ report: target, status: "banned" })
+          }
+          onShadowBanUser={(target) =>
+            moderateUser.mutate({ report: target, status: "shadow_banned" })
+          }
+        />
+      ))}
     </div>
   );
 }

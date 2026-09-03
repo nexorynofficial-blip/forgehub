@@ -1,59 +1,25 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
 
-import { getUserByUsername } from "@/lib/services/profile-service";
-import { FadeIn } from "@/components/motion/fade-in";
-import { AchievementsSection } from "@/components/profile/achievements-section";
-import { ContributionHeatmap } from "@/components/profile/contribution-heatmap";
-import { FollowersWidget } from "@/components/profile/followers-widget";
-import { PinnedProjectsSection } from "@/components/profile/pinned-projects-section";
-import { ProfileBanner } from "@/components/profile/profile-banner";
-import { ProfileTimeline } from "@/components/profile/profile-timeline";
+import { ProfileView } from "@/components/profile/profile-view";
 
 interface ProfilePageProps {
   params: Promise<{ username: string }>;
 }
 
+/**
+ * Titled from the handle alone.
+ *
+ * The display name would read better, but resolving it here would mean an
+ * unauthenticated server request — the access token is browser-only — and a
+ * page title is not the place to decide what a viewer may see. The handle is
+ * already in the URL, so it discloses nothing new.
+ */
 export async function generateMetadata({ params }: ProfilePageProps): Promise<Metadata> {
   const { username } = await params;
-  const user = await getUserByUsername(username);
-  if (!user) return { title: "Profile not found" };
-  return { title: `${user.displayName} (@${user.username})` };
+  return { title: `@${username}` };
 }
 
 export default async function ProfilePage({ params }: ProfilePageProps) {
   const { username } = await params;
-  const user = await getUserByUsername(username);
-  if (!user) notFound();
-
-  return (
-    <div className="flex flex-col gap-6 pt-8 pb-8">
-      <FadeIn>
-        <ProfileBanner user={user} />
-      </FadeIn>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="flex flex-col gap-6 lg:col-span-2">
-          <FadeIn delay={0.05}>
-            <ContributionHeatmap username={user.username} />
-          </FadeIn>
-          <FadeIn delay={0.1}>
-            <PinnedProjectsSection ownerId={user.id} />
-          </FadeIn>
-          <FadeIn delay={0.15}>
-            <ProfileTimeline username={user.username} />
-          </FadeIn>
-        </div>
-
-        <div className="flex flex-col gap-6">
-          <FadeIn delay={0.05}>
-            <FollowersWidget followersCount={user.followersCount} />
-          </FadeIn>
-          <FadeIn delay={0.1}>
-            <AchievementsSection achievements={user.achievements} />
-          </FadeIn>
-        </div>
-      </div>
-    </div>
-  );
+  return <ProfileView username={username} />;
 }

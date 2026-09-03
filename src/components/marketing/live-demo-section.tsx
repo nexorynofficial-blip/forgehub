@@ -1,11 +1,11 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { MessageCircle, Rss } from "lucide-react";
 
-import { DANA } from "@/lib/mock/people";
+import { mockMessagesByConversationId } from "@/lib/mock/messages";
+import { DANA, resolvePersonById } from "@/lib/mock/people";
 import { mockPosts } from "@/lib/mock/posts";
-import { getMessages } from "@/lib/services/messaging-service";
+import type { MessageWithSender } from "@/types";
 import { Container } from "@/components/layout/container";
 import { Section } from "@/components/layout/section";
 import { AmbientGlow } from "@/components/marketing/ambient-glow";
@@ -14,17 +14,22 @@ import { RevealOnScroll } from "@/components/motion/reveal-on-scroll";
 import { PostCard } from "@/components/feed/post-card";
 import { MessageBubble } from "@/components/messages/message-bubble";
 import { TypingIndicator } from "@/components/messages/typing-indicator";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-/** Real fixtures, not demo-only copies — a poll (genuinely interactive:
- * voting animates the bar) and a milestone post, the same `mockPosts` the
- * real Feed renders. */
+/**
+ * **Static marketing content.**
+ *
+ * This section sits on the public landing page, where the visitor is
+ * anonymous. It therefore renders the real components against *sample* data
+ * and makes no API call at all: `GET /messages/...` requires a session and
+ * would 401 for every visitor, and reading a real conversation to advertise
+ * the product would be showing one user's correspondence to strangers.
+ *
+ * The components are genuine — this is the same `PostCard` and `MessageBubble`
+ * the app uses — but they run in non-interactive mode, because a Like that can
+ * only ever fail is worse than a Like that is plainly a picture.
+ */
 const DEMO_POST_IDS = ["pst_004", "pst_001"];
-
-/** Real 1:1 conversation (Ava + Dana) — same `getMessages` call the actual
- * Messages page makes, so this is the genuine messaging UI, not a mockup
- * screenshot. */
 const DEMO_CONVERSATION_ID = "cvo_001";
 
 function FeedDemo() {
@@ -35,42 +40,36 @@ function FeedDemo() {
   return (
     <div className="flex flex-col gap-4 p-4 sm:p-6">
       {posts.map((post) => (
-        <PostCard key={post.id} post={post} />
+        <PostCard key={post.id} post={post} interactive={false} />
       ))}
     </div>
   );
 }
 
 function MessagesDemo() {
-  const { data: messages, isLoading } = useQuery({
-    queryKey: ["demoMessages", DEMO_CONVERSATION_ID],
-    queryFn: () => getMessages(DEMO_CONVERSATION_ID),
-  });
+  const messages: MessageWithSender[] = (
+    mockMessagesByConversationId[DEMO_CONVERSATION_ID] ?? []
+  )
+    .slice(-4)
+    .map((message) => {
+      const sender = resolvePersonById(message.senderId);
+      return sender ? { ...message, sender } : null;
+    })
+    .filter((message): message is MessageWithSender => message !== null);
 
   return (
     <div className="flex flex-col gap-4 p-4 sm:p-6">
-      {isLoading || !messages ? (
-        Array.from({ length: 3 }).map((_, i) => (
-          <Skeleton key={i} className="h-12 w-2/3" />
-        ))
-      ) : (
-        <>
-          {messages.slice(-4).map((message) => (
-            <MessageBubble
-              key={message.id}
-              message={message}
-              isOwn={message.senderId !== DANA.id}
-              showSender={false}
-              showStatus={false}
-              isSeen={false}
-            />
-          ))}
-          {/* Illustrative, not live — same simulated-typing convention used
-           * throughout the real Messages page (see docs/ASSUMPTIONS.md,
-           * Phase 09); shows the feature off without a polling loop here. */}
-          <TypingIndicator person={DANA} />
-        </>
-      )}
+      {messages.map((message) => (
+        <MessageBubble
+          key={message.id}
+          message={message}
+          isOwn={message.senderId !== DANA.id}
+          showSender={false}
+          showStatus={false}
+          isSeen={false}
+        />
+      ))}
+      <TypingIndicator usernames={[DANA.displayName]} />
     </div>
   );
 }
@@ -91,8 +90,8 @@ export function LiveDemoSection() {
             See ForgeHub in action
           </h2>
           <p className="text-muted-foreground mt-4 text-lg">
-            This isn&apos;t a screenshot — it&apos;s the real product. Like a post, vote
-            in the poll, switch tabs.
+            This isn&apos;t a screenshot — it&apos;s the real interface, running on sample
+            data. Switch tabs to look around.
           </p>
         </RevealOnScroll>
 

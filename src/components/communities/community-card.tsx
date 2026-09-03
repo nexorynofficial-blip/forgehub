@@ -6,12 +6,19 @@ import { Users } from "lucide-react";
 
 import { formatCompactNumber } from "@/lib/format";
 import { routes } from "@/lib/routes";
-import type { Community } from "@/types";
+import type { CommunitySummary } from "@/lib/services/community-service";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 
-export function CommunityCard({ community }: { community: Community }) {
+/**
+ * Typed against the discovery projection, not the full `Community`.
+ *
+ * The list endpoint deliberately serves a lighter shape — no rules, events,
+ * pins, or moderator list, because a paginated grid renders none of them and
+ * each is a per-community sub-query.
+ */
+export function CommunityCard({ community }: { community: CommunitySummary }) {
   return (
     <Link href={routes.community(community.slug)}>
       <motion.div

@@ -7,8 +7,9 @@ import { Eye, Heart } from "lucide-react";
 
 import { formatCompactNumber } from "@/lib/format";
 import { PROJECT_STATUS_META } from "@/lib/project-meta";
+import { queryKeys } from "@/lib/query-keys";
 import { routes } from "@/lib/routes";
-import { getPinnedProjects } from "@/lib/services/project-service";
+import { getTopProjects } from "@/lib/services/project-service";
 import type { Project } from "@/types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -62,12 +63,19 @@ function ProjectCard({ project }: { project: Project }) {
   );
 }
 
-/** UI_UX.md §8 "Pinned Projects" — see docs/ASSUMPTIONS.md for why this is
- * "most-liked" rather than a persisted pin. */
-export function PinnedProjectsSection({ ownerId }: { ownerId: string }) {
+/**
+ * UI_UX.md §8 "Pinned Projects", renamed to what it actually is.
+ *
+ * **There is no pin state to read.** No backend route stores one, and the
+ * shipped mock never did either — it sorted by likes and documented that. The
+ * list is now the owner's most-liked projects from the real API, so the card
+ * is titled "Top projects": keeping the old title would assert a curation the
+ * user never performed and cannot change.
+ */
+export function PinnedProjectsSection({ username }: { username: string }) {
   const { data: projects, isLoading } = useQuery({
-    queryKey: ["pinnedProjects", ownerId],
-    queryFn: () => getPinnedProjects(ownerId),
+    queryKey: queryKeys.ownerProjects(username),
+    queryFn: () => getTopProjects(username),
   });
 
   if (!isLoading && projects?.length === 0) return null;
@@ -75,7 +83,7 @@ export function PinnedProjectsSection({ ownerId }: { ownerId: string }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Pinned projects</CardTitle>
+        <CardTitle>Top projects</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="grid gap-4 sm:grid-cols-2">

@@ -2,23 +2,34 @@
 
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Menu, MessageSquare, Search } from "lucide-react";
+import { Menu, MessageSquare } from "lucide-react";
 
+import { queryKeys } from "@/lib/query-keys";
 import { routes } from "@/lib/routes";
-import { getRecentConversations } from "@/lib/services/dashboard-service";
+import { getConversations } from "@/lib/services/messaging-service";
 import { useUIStore } from "@/store/ui-store";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { GlobalSearch } from "@/components/app/global-search";
 import { NotificationsPanel } from "@/components/app/notifications-panel";
 import { UserMenu } from "@/components/app/user-menu";
 
 export function AppTopbar() {
   const toggleSidebar = useUIStore((state) => state.toggleSidebar);
-  const { data: conversations } = useQuery({
-    queryKey: ["recentConversations"],
-    queryFn: getRecentConversations,
+
+  /**
+   * The unread dot reads the first page of real conversations.
+   *
+   * A page rather than a grand total: the backend has no "unread conversation
+   * count" endpoint, and the dot only needs to know whether the number is
+   * above zero. `SocketProvider` invalidates this key on every `message:new`
+   * and `message:read`, so it stays current without polling.
+   */
+  const { data } = useQuery({
+    queryKey: queryKeys.conversations,
+    queryFn: () => getConversations(),
   });
-  const unreadMessages = conversations?.reduce((sum, c) => sum + c.unreadCount, 0) ?? 0;
+  const unreadMessages =
+    data?.items.reduce((sum, conversation) => sum + conversation.unreadCount, 0) ?? 0;
 
   return (
     <header className="glass sticky top-0 z-30 flex h-16 shrink-0 items-center gap-3 px-4 sm:px-6">
@@ -32,26 +43,9 @@ export function AppTopbar() {
         <Menu />
       </Button>
 
-      <div className="relative hidden max-w-sm flex-1 sm:block">
-        <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-3.5 size-4 -translate-y-1/2" />
-        <Input
-          type="search"
-          placeholder="Search projects, people, communities…"
-          aria-label="Search"
-          className="pl-10"
-        />
-      </div>
+      <GlobalSearch />
 
       <div className="ml-auto flex items-center gap-1 sm:ml-0">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="relative sm:hidden"
-          aria-label="Search"
-        >
-          <Search />
-        </Button>
-
         <Button
           variant="ghost"
           size="icon"

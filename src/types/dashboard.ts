@@ -41,11 +41,18 @@ export interface UpcomingEvent {
 
 export interface RecentConversationPreview {
   id: ID;
+  /** Null for a group thread, which has no single counterpart. */
+  participantId: ID | null;
   participantName: string;
   participantAvatarUrl: string | null;
   lastMessage: string;
   lastMessageAt: ISODateString;
   unreadCount: number;
+  /**
+   * Always `false` from the service — presence lives on the socket, which a
+   * plain async function cannot subscribe to. The widget overlays live
+   * presence from `useSocket()`.
+   */
   isOnline: boolean;
 }
 

@@ -20,7 +20,7 @@ import { LiveActivityFeed } from "@/components/marketing/live-activity-feed";
 export function CommunitiesSection() {
   const { data: communities, isLoading } = useQuery({
     queryKey: ["featuredCommunities"],
-    queryFn: getFeaturedCommunities,
+    queryFn: () => getFeaturedCommunities(),
   });
 
   return (

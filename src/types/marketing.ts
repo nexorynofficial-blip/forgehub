@@ -15,13 +15,6 @@ export interface Testimonial {
   authorAvatarUrl: string | null;
 }
 
-export interface PlatformStats {
-  builderCount: number;
-  projectCount: number;
-  collaborationCount: number;
-  countryCount: number;
-}
-
 export type ActivityKind = "launch" | "milestone" | "follow" | "collaboration";
 
 export interface ActivityItem {

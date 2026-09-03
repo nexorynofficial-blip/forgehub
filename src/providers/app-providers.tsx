@@ -9,6 +9,7 @@ import { MotionConfig } from "framer-motion";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/toaster";
 import { AuthProvider } from "@/providers/auth-provider";
+import { SocketProvider } from "@/providers/socket-provider";
 
 /**
  * Root client-side provider tree. Kept as one composed component so
@@ -25,6 +26,10 @@ import { AuthProvider } from "@/providers/auth-provider";
  * - AuthProvider: owns session identity. Sits inside QueryClientProvider
  *   because it clears the query cache on sign-out, and outside everything
  *   that renders, because route guards read its status.
+ * - SocketProvider: the Socket.IO connection and the event → cache mapping.
+ *   Inside AuthProvider because it connects only once a session exists and
+ *   tears the socket down on sign-out; inside QueryClientProvider because
+ *   every realtime event lands as a narrow cache update.
  */
 export function AppProviders({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -49,10 +54,12 @@ export function AppProviders({ children }: { children: ReactNode }) {
       >
         <MotionConfig reducedMotion="user">
           <AuthProvider>
-            <TooltipProvider delayDuration={200}>
-              {children}
-              <Toaster />
-            </TooltipProvider>
+            <SocketProvider>
+              <TooltipProvider delayDuration={200}>
+                {children}
+                <Toaster />
+              </TooltipProvider>
+            </SocketProvider>
           </AuthProvider>
         </MotionConfig>
       </ThemeProvider>

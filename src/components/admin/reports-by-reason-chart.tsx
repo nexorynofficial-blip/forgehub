@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import { queryKeys } from "@/lib/query-keys";
 import { getReportsByReason } from "@/lib/services/admin-service";
 import type { ReportReason } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,7 +28,7 @@ const RIGHT_PADDING = 40;
  * categories). Single hue, no legend needed for one series. */
 export function ReportsByReasonChart() {
   const { data, isLoading } = useQuery({
-    queryKey: ["adminReportsByReason"],
+    queryKey: queryKeys.adminReportsByReason,
     queryFn: getReportsByReason,
   });
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
