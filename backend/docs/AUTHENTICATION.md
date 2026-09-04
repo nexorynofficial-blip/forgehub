@@ -168,6 +168,200 @@ in the body _and_ set as an httpOnly cookie, so `POST /auth/2fa/challenge`
 works both for native clients that hold state and for the shipped `/2fa` page,
 which holds none.
 
+## Google OAuth
+
+Federated sign-in, backend-owned. The browser never speaks to Google on the
+application's behalf and never holds a Google credential: it makes two
+navigations, and everything between them happens server to server.
+
+```
+browser  →  GET /api/v1/auth/google
+              state + nonce + PKCE verifier stored in Redis (10 min)
+              state also set as an httpOnly cookie
+         ←  302 to accounts.google.com
+
+  … consent screen …
+
+browser  →  GET /api/v1/auth/google/callback?code&state
+              state must equal the cookie          (login CSRF)
+              transaction consumed with GETDEL     (single use)
+              code exchanged for an ID token       (back channel)
+              ID token verified: signature, iss, aud, exp, nonce
+              account resolved, ForgeHub session issued
+         ←  302 to APP_URL/auth/google/callback, refresh cookie set
+
+browser  →  POST /api/v1/auth/refresh   (the ordinary bootstrap)
+```
+
+The last step is why no token appears in a URL. The refresh cookie is already
+set by the redirect, so the completion page calls `refreshSession()` — the
+same call every page reload makes — and gets an access token through the
+normal channel.
+
+### Scopes and provider tokens
+
+`openid email profile`, and nothing else. No Gmail, Drive, Calendar, or
+Contacts scope is requested, so the consent screen asks for nothing the
+application cannot justify.
+
+The token exchange returns an access token. It is discarded:
+`exchangeCodeForIdToken` returns `Promise<string>` holding only the ID token,
+so there is no field a provider credential could be returned in and no
+variable holding one after the call. No refresh token is requested
+(`access_type` is left at its default). Nothing is persisted — the
+`oauth_accounts` table has columns for a provider and a subject, and nowhere
+to put a credential.
+
+That follows from scope: ForgeHub calls no Google API after sign-in, so a
+stored provider token would be a liability with no use.
+
+### Identity persistence
+
+```
+oauth_accounts
+  id, userId, provider, providerAccountId, createdAt, updatedAt
+  unique (provider, providerAccountId)   — one account per Google identity
+  unique (userId, provider)              — one Google identity per account
+```
+
+Keyed on Google's `sub`, never on the email. Google users can change the
+address on their account; a linkage that followed the email would follow it to
+whoever holds that address next.
+
+### Account resolution, in order
+
+1. **The `sub` is already linked.** The only lookup that proves identity.
+   Email is not consulted at all.
+2. **An account exists for the address.** Linking, under the rules below.
+3. **Nobody has the address.** A new account, created verified.
+
+### The linking policy
+
+This is the dangerous half of OAuth, because ForgeHub lets anyone _register_
+an address without proving they own it. Both sides must therefore be proven:
+
+- **Google's side** — `email_verified` must be exactly `true`. An absent claim
+  means Google is declining to attest, which is not the same as attesting.
+  Without it the callback stops at `oauth_email_unverified`.
+- **ForgeHub's side** — the existing account must already have verified the
+  same address by clicking the emailed link, which only its real owner can
+  receive.
+
+An unverified account is **refused**, not captured (`oauth_account_unverified`),
+and the user is told to verify first or sign in with their password. That
+closes the pre-hijack attack: register `victim@example.com`, wait, and the day
+the victim first signs in with Google they would otherwise be dropped into the
+attacker's account — sharing it, with the attacker's password still working.
+
+The refusal is the non-destructive choice. Some products resolve this the
+other way — link anyway, void the password, revoke the sessions — which
+decides in the Google user's favour but silently locks out whoever set that
+password, and nothing at the callback can tell which of them is the impostor.
+
+An account that already holds a Google link and meets a _different_ `sub` is
+refused as `oauth_account_conflict`. Both refusals are written to the audit
+log as `OAUTH_LINK_REJECTED`, because a run of them against one address is
+what an attempted takeover looks like.
+
+### Email verification
+
+`email_verified=true` from Google maps to `emailVerified` on a new account,
+with `emailVerifiedAt` set and **no** verification email sent. Requiring a
+second, emailed proof of an address the provider has already verified would be
+ceremony rather than security. Nothing marks an address verified that Google
+has not attested — the flow refuses before reaching account resolution.
+
+### Accounts with no password
+
+`users.passwordHash` has always been nullable; before OAuth nothing produced a
+row that used it. A Google-created account stores `null` rather than a random
+hash — an invented credential is one nothing can verify and a database leak
+could attack.
+
+Password login against such an account takes the existing `!user?.passwordHash`
+branch: the dummy Argon2 verification still runs and the answer is the same
+`Invalid email or password` a wrong password gets, so this is not an oracle for
+which accounts have no password. `changePassword` refuses for the same reason.
+A user who wants a password can obtain one through the existing
+forgot-password flow, which already writes a hash; no new feature was added
+for that.
+
+### Two-factor
+
+An enrolled second factor is required, with no exemption for the login method.
+A Google sign-in to a 2FA account stops at the same challenge the password
+flow stops at, sets the same `forgehub_2fa` cookie, redirects to `/2fa`, and
+finishes through `POST /auth/2fa/challenge`.
+
+This is the policy the codebase already had — `login` enforces it for
+passwords and nothing anywhere exempts a method — so treating Google as a
+substitute strong factor would have quietly downgraded every account that
+turned 2FA on, without telling the person who turned it on.
+
+### Sessions
+
+There is no OAuth session model. `signInAsUser` ends at `finalizeLogin`, the
+same function password login ends at: a `sessions` row, a rotating refresh
+token, an `httpOnly` refresh cookie under the same name, a `USER_LOGIN` audit
+record. "Remember me" has no checkbox in a provider redirect, so the shorter
+of the two refresh lifetimes applies — the same default an unticked form gets.
+
+### State, PKCE, and nonce
+
+| Value         | Where it lives                       | What it stops                                     |
+| ------------- | ------------------------------------ | ------------------------------------------------- |
+| `state`       | Redis (hashed key) + httpOnly cookie | Login CSRF — a callback the browser did not start |
+| PKCE verifier | Redis only                           | Authorization-code injection                      |
+| `nonce`       | Redis only                           | Replay of an ID token from another sign-in        |
+
+256 bits of entropy each, ten-minute TTL, consumed with `GETDEL` so two
+callbacks carrying the same state cannot both succeed. The cookie is
+`httpOnly`, `Secure` in production, scoped to `/api/v1/auth/google`, and
+cleared on every outcome. `SameSite` is forced to `lax` when the deployment
+selected `strict`: the callback is a cross-site top-level navigation issued by
+Google, and `strict` would withhold the cookie on exactly that request.
+
+### Open redirect
+
+`?next=` is accepted only as an internal path. `safeInternalPath` parses it
+against an unreachable `.invalid` base and rejects anything that resolves to a
+different origin — `https://evil.example`, the protocol-relative
+`//evil.example` and its backslash variant, `javascript:`, `data:` — along with
+control characters and oversized values. What survives is reassembled from
+`pathname + search + hash`, so nothing that merely looked path-shaped is
+echoed. The destination is stored server-side rather than round-tripped
+through Google, and re-validated by the frontend that receives it.
+
+### Failure vocabulary
+
+A closed set of opaque codes, and the only thing besides `next` that crosses
+into a URL. No provider response body, internal message, or stack ever does.
+
+| Code                       | Meaning                                                  |
+| -------------------------- | -------------------------------------------------------- |
+| `oauth_unavailable`        | Provider off or incompletely configured                  |
+| `oauth_cancelled`          | Declined at the consent screen                           |
+| `oauth_state_invalid`      | Missing, mismatched, expired, or already-spent state     |
+| `oauth_exchange_failed`    | The code could not be exchanged                          |
+| `oauth_identity_invalid`   | The ID token failed verification                         |
+| `oauth_email_unverified`   | Google does not attest the address                       |
+| `oauth_account_unverified` | A ForgeHub account holds the address but never proved it |
+| `oauth_account_conflict`   | The address is linked to a different Google identity     |
+| `oauth_account_suspended`  | The account is banned or suspended                       |
+
+### Configuration
+
+Off unless switched on. `GOOGLE_OAUTH_ENABLED=true` makes
+`GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and
+`GOOGLE_OAUTH_REDIRECT_URI` required — the process refuses to boot without
+them, because a half-configured provider shows a working-looking button that
+fails after the user has already handed their password to Google. The frontend
+mirrors the switch with `NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED`; with it off, the
+button and its divider are not rendered at all.
+
+See `docs/DEPLOYMENT.md` for the Google Cloud Console setup and the exact
+redirect URIs.
+
 ## RBAC
 
 Six roles, matching the frontend's `UserRole` union exactly:
@@ -371,6 +565,8 @@ apart from "sign in again".
 | POST   | `/api/v1/auth/2fa/confirm`         | bearer          |
 | POST   | `/api/v1/auth/2fa/disable`         | bearer          |
 | POST   | `/api/v1/auth/2fa/challenge`       | challenge token |
+| GET    | `/api/v1/auth/google`              | —               |
+| GET    | `/api/v1/auth/google/callback`     | state cookie    |
 
 All are documented in the OpenAPI document at `/api/v1/openapi.json`.
 
@@ -378,7 +574,10 @@ All are documented in the OpenAPI document at `/api/v1/openapi.json`.
 
 The shipped signup form collects displayName, email, and password — no
 username — yet `users.username` is `NOT NULL UNIQUE` and profile routes are
-`/profile/[username]`. So the server generates one.
+`/profile/[username]`. So the server generates one. Google sign-in uses the
+same generator, from the `name` claim; an identity with no `name` gets the
+neutral display name `New Builder` rather than the email local part, for
+the reason immediately below.
 
 Derived from **displayName only**, never the email: an email local part
 frequently contains a real name or an internal identifier the user did not
@@ -399,6 +598,9 @@ catches `P2002` on `username`, picks a random suffix, and retries. `P2002` on
 - **No OAuth.** PRD §4 asks for an OAuth-_ready_ architecture, which the
   session/token split provides — an OAuth callback would create a session
   exactly as password login does. The Google/GitHub buttons remain inert.
+  _Superseded:_ Google sign-in shipped later and did exactly that, reusing
+  `finalizeLogin` unchanged — see "Google OAuth" above. GitHub is still
+  unimplemented, and its button was removed rather than left inert.
 - **No frontend wiring.** Every `src/lib/services/*` module is still a mock.
   Two flows have no page to land on yet: `/verify-email` reads only `?email=`,
   and there is no `/reset-password` route at all. Both endpoints ship and are

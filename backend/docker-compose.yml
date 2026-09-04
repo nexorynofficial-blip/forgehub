@@ -83,6 +83,18 @@ services:
       APP_URL: ${APP_URL:-http://localhost:3000}
       EMAIL_VERIFICATION_EXPIRES: ${EMAIL_VERIFICATION_EXPIRES:-24h}
       PASSWORD_RESET_EXPIRES: ${PASSWORD_RESET_EXPIRES:-1h}
+      # Google OAuth. Off unless explicitly switched on, and switching it on
+      # without the three values below stops the container at boot rather than
+      # showing a sign-in button that fails at the last step.
+      GOOGLE_OAUTH_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
+      # No inline defaults: these are per-deployment, and a shared fallback
+      # client would send every install's users to the same consent screen.
+      # Unset resolves to the empty string, which config/env.ts reads as
+      # "not configured" — so these lines are inert until you enable it.
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI}
+      OAUTH_STATE_COOKIE_NAME: ${OAUTH_STATE_COOKIE_NAME:-forgehub_oauth_state}
       # Phase 12 added AI_PROVIDER to `config/env.ts` but could not add it here
       # — this file was frozen for that phase — so a containerised deployment
       # always resolved the `local` default and could not select `disabled`.

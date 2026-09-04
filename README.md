@@ -21,7 +21,8 @@ check at the route level, not just the nav's visibility check.
   ScrollTrigger parallax on scroll), features, testimonials, live activity
   feed, communities teaser, CTA.
 - **Auth** — login, signup, forgot-password, email verification, 2FA, all
-  Zod + react-hook-form, OAuth buttons (visual-only, no provider configured).
+  Zod + react-hook-form, and Google sign-in (backend-owned OAuth; the button
+  is hidden unless the provider is configured).
 - **Dashboard** — stats, trending projects, leaderboard, upcoming events,
   quick messages, activity feed.
 - **Profile** — banner, contribution heatmap, pinned projects, achievements,

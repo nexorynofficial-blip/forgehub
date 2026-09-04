@@ -43,3 +43,24 @@ export const API_BASE_URL = resolved.apiUrl;
 
 /** The Socket.IO origin — the server root, without the API prefix. */
 export const SOCKET_URL = resolved.socketUrl;
+
+/**
+ * Whether to offer Google sign-in.
+ *
+ * A build-time flag rather than a value fetched from the API, because the
+ * sign-in page has to decide what to render before it has talked to anything.
+ * It carries no secret — the client id it gates never even reaches this
+ * bundle, since the whole flow is a navigation to a backend route.
+ *
+ * It is a mirror of the backend's own `GOOGLE_OAUTH_ENABLED`, so the two can
+ * disagree. That is survivable by design: with this on and the backend off,
+ * the start route redirects straight to the completion page with
+ * `oauth_unavailable`, which the user reads as "not available" rather than a
+ * crash. With this off and the backend on, the button is simply absent.
+ *
+ * The full static property access matters — Next.js inlines `NEXT_PUBLIC_*`
+ * by literal text substitution, so a computed `process.env[name]` would not
+ * be replaced and would read `undefined` in the browser.
+ */
+export const GOOGLE_OAUTH_ENABLED =
+  process.env.NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED === "true";

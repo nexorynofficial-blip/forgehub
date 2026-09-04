@@ -36,6 +36,16 @@ export const AuditAction = {
   SESSION_REVOKED: "SESSION_REVOKED",
   ALL_SESSIONS_REVOKED: "ALL_SESSIONS_REVOKED",
 
+  /* Federated sign-in. The successful cases reuse USER_REGISTERED and
+     USER_LOGIN — a Google sign-in produces an ordinary ForgeHub session, and
+     splitting the verb would hide those logins from anyone auditing "how did
+     this account get signed into". What is new is the linkage itself, which
+     is the security-relevant event: an existing account gaining a second way
+     in. The rejection is recorded because a run of them against one address
+     is what an attempted account takeover looks like. */
+  OAUTH_ACCOUNT_LINKED: "OAUTH_ACCOUNT_LINKED",
+  OAUTH_LINK_REJECTED: "OAUTH_LINK_REJECTED",
+
   TWO_FACTOR_ENROLLMENT_STARTED: "TWO_FACTOR_ENROLLMENT_STARTED",
   TWO_FACTOR_ENABLED: "TWO_FACTOR_ENABLED",
   TWO_FACTOR_DISABLED: "TWO_FACTOR_DISABLED",

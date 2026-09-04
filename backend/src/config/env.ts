@@ -56,6 +56,29 @@ const PLACEHOLDER_PREFIX = "replace_me";
  */
 const DEFAULT_EMAIL_FROM = "ForgeHub <no-reply@forgehub.dev>";
 
+/**
+ * Reads `""` as "not configured".
+ *
+ * Compose — and most container platforms — substitute an unset variable as the
+ * empty string rather than omitting it, so every optional variable this file
+ * forwards has to treat `""` as absent or merely *listing* it in
+ * `docker-compose.yml` would fail the value's own validation.
+ *
+ * The `.optional()` belongs **inside** the preprocess, which is why this is a
+ * helper rather than a pattern to re-type. Outside, it only short-circuits a
+ * value that is already `undefined`: an empty string is not, so preprocess
+ * would run, hand `undefined` to a required inner schema, and reject with
+ * "expected string, received undefined" — a crash loop on every container that
+ * forwards the variable without setting it.
+ */
+function optionalUnlessBlank<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim().length === 0 ? undefined : value,
+    schema.optional(),
+  );
+}
+
 /** A cryptographic secret: long enough, and demonstrably not the template's. */
 function secret(): z.ZodType<string> {
   return z
@@ -157,34 +180,83 @@ const envSchema = z.object({
    * matters — it is what stops `cp .env.example .env` from booting on a
    * value that is not a key.
    */
-  RESEND_API_KEY: z.preprocess(
-    /*
-     * Compose (and most container platforms) substitute an unset variable as
-     * the empty string rather than omitting it, so `""` has to mean "not
-     * configured" — otherwise merely forwarding this key would make every
-     * development `docker compose up` fail the length check below.
-     *
-     * The `.optional()` sits **inside** the preprocess rather than outside
-     * it. Outside, it only short-circuits when the value is already
-     * `undefined`: an empty string is not, so preprocess would run, hand
-     * `undefined` to a required inner schema, and reject with "expected
-     * string, received undefined". That is a crash loop on every container
-     * that forwards the variable without setting it.
-     */
-    (value) =>
-      typeof value === "string" && value.trim().length === 0 ? undefined : value,
+  RESEND_API_KEY: optionalUnlessBlank(
     z
       .string()
       .min(20, "does not look like a Resend API key")
       .refine((value) => !value.toLowerCase().startsWith(PLACEHOLDER_PREFIX), {
         message: "is still the .env.example placeholder — paste the real key from Resend",
-      })
-      .optional(),
+      }),
   ),
   /** Public frontend origin — used to build verification/reset links. */
   APP_URL: z.string().url().default("http://localhost:3000"),
   EMAIL_VERIFICATION_EXPIRES: z.string().min(1).default("24h"),
   PASSWORD_RESET_EXPIRES: z.string().min(1).default("1h"),
+
+  /* ── Google OAuth ────────────────────────────────────────────────────── */
+
+  /**
+   * The master switch for federated sign-in.
+   *
+   * Explicit rather than inferred from "are the credentials present?", so the
+   * feature is never half-on: with this `false` the routes still exist but
+   * refuse, and the sign-in button is hidden. With it `true`, every value the
+   * flow needs is required by the `superRefine` below and the process will not
+   * boot without them.
+   */
+  GOOGLE_OAUTH_ENABLED: z
+    .preprocess(
+      (value) =>
+        typeof value === "string" && value.trim().length === 0 ? undefined : value,
+      z.enum(["true", "false"]).default("false"),
+    )
+    .transform((value) => value === "true"),
+
+  /**
+   * The OAuth client identifier from Google Cloud Console.
+   *
+   * Not a secret — it is sent to the browser in every authorization redirect —
+   * but it is checked for Google's own suffix, because the field beside it in
+   * the console is the secret, and pasting them the wrong way round is the
+   * mistake this catches at boot rather than at the first sign-in attempt.
+   */
+  GOOGLE_OAUTH_CLIENT_ID: optionalUnlessBlank(
+    z
+      .string()
+      .endsWith(
+        ".apps.googleusercontent.com",
+        "must be the Client ID from Google Cloud Console — those always end in .apps.googleusercontent.com",
+      ),
+  ),
+
+  /** The OAuth client secret. Used only server-to-server, never sent to a browser. */
+  GOOGLE_OAUTH_CLIENT_SECRET: optionalUnlessBlank(
+    z
+      .string()
+      .min(16, "does not look like a Google OAuth client secret")
+      .refine((value) => !value.toLowerCase().startsWith(PLACEHOLDER_PREFIX), {
+        message:
+          "is still the .env.example placeholder — paste the real secret from Google Cloud Console",
+      }),
+  ),
+
+  /**
+   * Where Google sends the browser back.
+   *
+   * Google matches this string **exactly** against the redirect URI registered
+   * on the client, so it is configuration rather than something derivable: a
+   * deployment behind a proxy may be reached on a host the process cannot see.
+   * It must name this API's own callback route — `/api/v1/auth/google/callback`
+   * on a default mount.
+   */
+  GOOGLE_OAUTH_REDIRECT_URI: optionalUnlessBlank(z.string().url()),
+
+  /**
+   * Carries the pending authorization across the round trip to Google. A
+   * distinct name from the refresh and 2FA cookies because it is a distinct,
+   * ten-minute credential scoped to the OAuth routes alone.
+   */
+  OAUTH_STATE_COOKIE_NAME: z.string().min(1).default("forgehub_oauth_state"),
 
   /* ── AI ──────────────────────────────────────────────────────────────── */
 
@@ -234,10 +306,13 @@ const envSchema = z.object({
 /**
  * Rules that span more than one variable, so they cannot live on a field.
  *
- * All three concern email, and all three exist because the alternative is
- * silence: a misconfigured transport does not fail a request, it drops a
- * password-reset link and returns 200, and nobody finds out until a user
- * cannot get back into their account.
+ * The email rules exist because the alternative is silence: a misconfigured
+ * transport does not fail a request, it drops a password-reset link and
+ * returns 200, and nobody finds out until a user cannot get back into their
+ * account. The Google OAuth rules exist for the same reason in a different
+ * shape — a provider that is switched on but missing a credential would
+ * present a working-looking sign-in button that fails at the last step,
+ * after the user has already handed their password to Google.
  */
 const envSchemaWithRules = envSchema.superRefine((value, ctx) => {
   if (value.EMAIL_PROVIDER === "resend") {
@@ -266,6 +341,60 @@ const envSchemaWithRules = envSchema.superRefine((value, ctx) => {
    * previous behaviour was a production deployment that looked healthy and
    * sent no mail at all.
    */
+  /**
+   * Enabling the provider means committing to all of it. Each of these is
+   * unrecoverable at request time: without them the authorization redirect
+   * cannot be built, the code cannot be exchanged, or Google will refuse the
+   * callback for a redirect_uri it was never told about.
+   */
+  if (value.GOOGLE_OAUTH_ENABLED) {
+    const required = [
+      "GOOGLE_OAUTH_CLIENT_ID",
+      "GOOGLE_OAUTH_CLIENT_SECRET",
+      "GOOGLE_OAUTH_REDIRECT_URI",
+    ] as const;
+
+    for (const name of required) {
+      if (value[name] === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: [name],
+          message: "is required when GOOGLE_OAUTH_ENABLED=true",
+        });
+      }
+    }
+
+    /**
+     * Google refuses a non-HTTPS redirect URI for any host but localhost, and
+     * a loopback callback in production would send the user's authorization
+     * code to their own machine. Both are caught here rather than by Google's
+     * error page halfway through a sign-in.
+     */
+    if (value.GOOGLE_OAUTH_REDIRECT_URI !== undefined) {
+      const redirect = new URL(value.GOOGLE_OAUTH_REDIRECT_URI);
+      const isLoopback = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(
+        redirect.hostname,
+      );
+
+      if (redirect.protocol !== "https:" && !isLoopback) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["GOOGLE_OAUTH_REDIRECT_URI"],
+          message: "must use https — Google only accepts http for localhost",
+        });
+      }
+
+      if (value.NODE_ENV === "production" && isLoopback) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["GOOGLE_OAUTH_REDIRECT_URI"],
+          message:
+            "points at this machine, so Google would return the authorization code to the user's own browser rather than to the API. Set it to the public callback URL",
+        });
+      }
+    }
+  }
+
   if (value.NODE_ENV === "production" && value.EMAIL_PROVIDER === "console") {
     ctx.addIssue({
       code: "custom",

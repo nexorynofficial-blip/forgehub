@@ -75,6 +75,23 @@ export function createAuthRouter(): Router {
 
   router.get("/me", requireAuth, controller.me);
 
+  /* ── Google sign-in ───────────────────────────────────────────────────── */
+
+  /**
+   * Both are `GET` because both are browser navigations: the first sends the
+   * user to Google, the second is Google sending them back. Neither carries a
+   * body, and neither can be a `fetch` — the user has to *see* the consent
+   * screen.
+   *
+   * The credential limiter guards the start route only. Applying it to the
+   * callback would answer a legitimate user mid-sign-in with a JSON 429 in
+   * place of a page, and the callback already has a stronger guard than a
+   * rate limit: a single-use state that must match a cookie this server set,
+   * which no attacker can forge and no replay can spend twice.
+   */
+  router.get("/google", credentialLimiter, controller.startGoogleOAuth);
+  router.get("/google/callback", controller.googleOAuthCallback);
+
   /* ── Email verification ───────────────────────────────────────────────── */
 
   router.post(

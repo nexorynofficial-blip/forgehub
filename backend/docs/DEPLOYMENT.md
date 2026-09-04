@@ -91,14 +91,15 @@ rather than failing later on the first request that touches a bad value.
 
 ### Required — no default, boot fails without them
 
-| Variable                | Notes                                               |
-| ----------------------- | --------------------------------------------------- |
-| `DATABASE_URL`          | must start `postgres`                               |
-| `REDIS_URL`             | must start `redis`                                  |
-| `JWT_ACCESS_SECRET`     | ≥32 chars, and not the `.env.example` placeholder   |
-| `JWT_REFRESH_SECRET`    | ≥32 chars; HMAC pepper for stored token hashes      |
-| `TWO_FACTOR_SECRET_KEY` | ≥32 chars; AES-256-GCM key for TOTP secrets at rest |
-| `RESEND_API_KEY`        | **only when `EMAIL_PROVIDER=resend`** — see below   |
+| Variable                                                                            | Notes                                                 |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `DATABASE_URL`                                                                      | must start `postgres`                                 |
+| `REDIS_URL`                                                                         | must start `redis`                                    |
+| `JWT_ACCESS_SECRET`                                                                 | ≥32 chars, and not the `.env.example` placeholder     |
+| `JWT_REFRESH_SECRET`                                                                | ≥32 chars; HMAC pepper for stored token hashes        |
+| `TWO_FACTOR_SECRET_KEY`                                                             | ≥32 chars; AES-256-GCM key for TOTP secrets at rest   |
+| `RESEND_API_KEY`                                                                    | **only when `EMAIL_PROVIDER=resend`** — see below     |
+| `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REDIRECT_URI` | **only when `GOOGLE_OAUTH_ENABLED=true`** — see below |
 
 Compose additionally requires `POSTGRES_USER`, `POSTGRES_PASSWORD`, and
 `POSTGRES_DB` for the database service. None of the three carries a default, so
@@ -107,17 +108,19 @@ password.
 
 ### Selected optional variables
 
-| Variable              | Default                 | Effect                                          |
-| --------------------- | ----------------------- | ----------------------------------------------- |
-| `NODE_ENV`            | `development`           | see the warning below                           |
-| `PORT` / `HOST`       | `4000` / `0.0.0.0`      | listen address                                  |
-| `CORS_ORIGIN`         | `http://localhost:3000` | comma-separated allowlist                       |
-| `LOG_LEVEL`           | `info`                  | pino level                                      |
-| `COOKIE_SECURE`       | _unset_                 | unset means **on in production**, off elsewhere |
-| `COOKIE_SAMESITE`     | `lax`                   | `none` also requires `COOKIE_SECURE=true`       |
-| `EMAIL_PROVIDER`      | `console`               | `console` or `resend` — see **Email** below     |
-| `AI_PROVIDER`         | `local`                 | `local` or `disabled`                           |
-| `SHUTDOWN_TIMEOUT_MS` | `10000`                 | hard ceiling on draining                        |
+| Variable                  | Default                 | Effect                                          |
+| ------------------------- | ----------------------- | ----------------------------------------------- |
+| `NODE_ENV`                | `development`           | see the warning below                           |
+| `PORT` / `HOST`           | `4000` / `0.0.0.0`      | listen address                                  |
+| `CORS_ORIGIN`             | `http://localhost:3000` | comma-separated allowlist                       |
+| `LOG_LEVEL`               | `info`                  | pino level                                      |
+| `COOKIE_SECURE`           | _unset_                 | unset means **on in production**, off elsewhere |
+| `COOKIE_SAMESITE`         | `lax`                   | `none` also requires `COOKIE_SECURE=true`       |
+| `EMAIL_PROVIDER`          | `console`               | `console` or `resend` — see **Email** below     |
+| `AI_PROVIDER`             | `local`                 | `local` or `disabled`                           |
+| `GOOGLE_OAUTH_ENABLED`    | `false`                 | `true` makes the three Google values required   |
+| `OAUTH_STATE_COOKIE_NAME` | `forgehub_oauth_state`  | short-lived cookie for the OAuth round trip     |
+| `SHUTDOWN_TIMEOUT_MS`     | `10000`                 | hard ceiling on draining                        |
 
 `COOKIE_SECURE` and `COOKIE_DOMAIN` are deliberately **not** forwarded by
 Compose. Leaving `COOKIE_SECURE` unset is what makes cookies `Secure`
@@ -218,6 +221,94 @@ their token; `tests/email-unit.test.ts` asserts the generated paths match.
 
 Verification currently gates no route (`requireVerifiedEmail` is defined but
 applied nowhere), so unverified users are not locked out while DNS propagates.
+
+## Google sign-in
+
+Optional and **off by default**. Everything below can be skipped; the app runs
+with email and password alone, and the Google button simply is not rendered.
+
+### The redirect URI
+
+Google matches this string **exactly** — scheme, host, port, path, no trailing
+slash. It is the backend's own callback route, not a frontend page:
+
+|            |                                                         |
+| ---------- | ------------------------------------------------------- |
+| Local      | `http://localhost:4000/api/v1/auth/google/callback`     |
+| Production | `https://api.<your-domain>/api/v1/auth/google/callback` |
+
+Substitute your own API host. If the API is served under a path prefix by a
+reverse proxy, the registered URI must include that prefix — the value in
+`GOOGLE_OAUTH_REDIRECT_URI` and the value registered in Google must be the
+same string, character for character, or Google refuses the callback with
+`redirect_uri_mismatch`.
+
+### Google Cloud Console setup
+
+1. Open [console.cloud.google.com](https://console.cloud.google.com).
+2. Create a project, or select an existing one, from the project picker.
+3. Go to **APIs & Services → OAuth consent screen** (newer consoles present
+   this as **Google Auth Platform → Branding**). Fill in the app name, the
+   user-support email, and the developer contact email.
+4. Choose the audience. **External** is what a public site needs; **Internal**
+   is available only to Google Workspace organisations and restricts sign-in
+   to that organisation. While the app is in **Testing**, only the accounts
+   listed under **Audience → Test users** can sign in — add your own address
+   there, or publish the app when you are ready.
+5. Under **Data access** (older consoles: **Scopes**), confirm only
+   `openid`, `.../auth/userinfo.email`, and `.../auth/userinfo.profile`. These
+   are non-sensitive and need no verification review. **Do not enable any
+   Google API** — this integration calls none.
+6. Go to **APIs & Services → Credentials → Create credentials → OAuth client
+   ID**.
+7. Application type: **Web application**. Name it something recognisable.
+8. **Authorized redirect URIs → Add URI**: paste the callback URL from the
+   table above. Add both the local and the production URI if one client is
+   serving both.
+9. **Authorized JavaScript origins**: leave empty. That field is for
+   browser-side Google libraries, and this flow uses none — the browser never
+   calls Google from JavaScript.
+10. Copy the **Client ID** and **Client secret** into the backend's
+    git-ignored `.env`:
+
+    ```env
+    GOOGLE_OAUTH_ENABLED=true
+    GOOGLE_OAUTH_CLIENT_ID=...apps.googleusercontent.com
+    GOOGLE_OAUTH_CLIENT_SECRET=...
+    GOOGLE_OAUTH_REDIRECT_URI=http://localhost:4000/api/v1/auth/google/callback
+    ```
+
+11. Set the frontend's matching flag in its own git-ignored `.env.local`, then
+    rebuild the frontend — this value is inlined at build time:
+
+    ```env
+    NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED=true
+    ```
+
+12. Restart the backend. Boot fails loudly and names the variable if anything
+    is missing.
+13. Open `/login`. "Continue with Google" now goes to Google.
+
+The client secret is a real credential: `.env` is git-ignored, and the schema
+rejects the published `.env.example` placeholder so a copied template cannot
+boot as if it were configured.
+
+### Turning it off
+
+Set `GOOGLE_OAUTH_ENABLED=false` (or unset it) and rebuild the frontend with
+`NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED=false`. The routes stay mounted but refuse,
+redirecting to the frontend with `oauth_unavailable`, so an old bookmark
+degrades to a readable message rather than an error page.
+
+The two flags can disagree without breaking anything, which is deliberate —
+one is baked into a bundle and the other is read at boot, so they cannot be
+changed atomically.
+
+### Both flags must be set for the build, not just the runtime
+
+`NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` is inlined into the browser bundle by
+`next build`, exactly like the two API URLs. Setting it only in the runtime
+environment has no effect. See "Frontend production environment" below.
 
 ## First platform administrator
 
@@ -394,12 +485,13 @@ Neither command touches the volumes or the database.
 
 ## Frontend production environment
 
-Two variables, both public by construction — `NEXT_PUBLIC_*` values are inlined
-into the browser bundle, so neither may ever hold a secret:
+Public by construction — `NEXT_PUBLIC_*` values are inlined into the browser
+bundle, so none of these may ever hold a secret:
 
 ```bash
 NEXT_PUBLIC_API_URL=https://api.your-domain/api/v1   # includes the version prefix
 NEXT_PUBLIC_SOCKET_URL=https://api.your-domain       # the server ROOT, no prefix
+NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED=true                # only if Google sign-in is on
 ```
 
 **Set them in the build environment.** They are baked in when `next build` runs,
@@ -411,6 +503,11 @@ from module scope; both apply the same rules from `src/lib/env-contract.ts`.
 A build is refused when either variable is unset, is not an absolute http(s)
 URL, points at loopback, or — for the socket URL — carries a path, which would
 produce `/api/v1/socket.io` and fail the handshake.
+
+`NEXT_PUBLIC_GOOGLE_OAUTH_ENABLED` is not validated — it is a boolean whose
+safe default is "off", and an unset value simply hides the Google button.
+It is listed here because it is inlined the same way: flipping it on a
+running deployment does nothing until the next build.
 
 Previously an omitted variable baked `http://localhost:4000` into the bundle:
 the build succeeded, the deployment reported healthy, and every request from a

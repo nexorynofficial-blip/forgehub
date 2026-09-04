@@ -142,6 +142,12 @@ extension point for actual scene content per page.
   real brand marks and hover/focus states but have no `onClick` — no OAuth
   provider is configured anywhere in the stack. Wiring them is out of scope
   until a real auth backend exists.
+  _Superseded:_ Google sign-in is now a complete backend-owned flow — the
+  button navigates to `/api/v1/auth/google` and the whole block hides when
+  the provider is off (`backend/docs/AUTHENTICATION.md`, "Google OAuth").
+  The GitHub button was removed rather than left inert: a control that
+  cannot do what it says is worse than an absent one. It belongs back the
+  day there is an implementation behind it.
 - **`Checkbox` added to `components/ui/`.** Needed for "Remember me" (login)
   and "I agree to the Terms" (signup); wasn't built in Phase 01 because
   nothing needed it yet. Same Radix + `class-variance-authority` pattern as

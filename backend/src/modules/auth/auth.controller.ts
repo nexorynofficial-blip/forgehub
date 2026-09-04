@@ -1,14 +1,20 @@
 import type { Request, RequestHandler, Response } from "express";
 
 import {
+  clearOAuthStateCookie,
   clearRefreshCookie,
   clearTwoFactorChallengeCookie,
   cookieNames,
+  setOAuthStateCookie,
   setRefreshCookie,
   setTwoFactorChallengeCookie,
 } from "../../config/cookies.js";
+import { env } from "../../config/env.js";
+import { isGoogleOAuthConfigured } from "../../integrations/oauth/google.js";
+import { safeInternalPath } from "../../utils/redirect.js";
 import { auditContextFromRequest } from "../../utils/audit.js";
 import { AppError } from "../../utils/errors.js";
+import { OAUTH_COMPLETION_PATH, TWO_FACTOR_PATH } from "./auth.frontend-routes.js";
 import { successResponse } from "../../utils/response.js";
 import { validated } from "../../middleware/validation.middleware.js";
 import * as authService from "./auth.service.js";
@@ -309,4 +315,103 @@ export const challengeTwoFactor: RequestHandler = async (req, res) => {
   );
 
   respondLoginResult(res, result, "Signed in successfully");
+};
+
+/* ── Google sign-in ─────────────────────────────────────────────────────── */
+
+/**
+ * The provider routes answer with **redirects**, not JSON, because the client
+ * is a browser mid-navigation rather than the API client. Everything the
+ * frontend needs afterwards it gets the ordinary way: the refresh cookie is
+ * already set, so the completion page calls `/auth/refresh` like any reload.
+ *
+ * Consequently no token of any kind is ever placed in a redirect URL. The
+ * only thing that crosses in the query string is an error code from the
+ * closed set in `auth.service.ts`.
+ */
+
+/**
+ * A query parameter, but only when it is a single plain string.
+ *
+ * Express parses `?state=a&state=b` into an array. For a value whose whole
+ * job is to be compared against a cookie, "which one did you mean" is not a
+ * question worth answering — a duplicated parameter is an attack shape, and
+ * this returns `null` for it.
+ */
+function readQuery(req: Request, name: string): string | null {
+  const value = (req.query as Record<string, unknown>)[name];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** Absolute URL on the configured frontend origin. */
+function frontendUrl(path: string, params?: Record<string, string>): string {
+  const url = new URL(path, env.APP_URL);
+  for (const [key, value] of Object.entries(params ?? {})) {
+    url.searchParams.set(key, value);
+  }
+  return url.toString();
+}
+
+/** Where every OAuth outcome lands. The page reads `error` or refreshes. */
+function completionUrl(params?: Record<string, string>): string {
+  return frontendUrl(OAUTH_COMPLETION_PATH, params);
+}
+
+export const startGoogleOAuth: RequestHandler = async (req, res) => {
+  if (!isGoogleOAuthConfigured()) {
+    // Not a 503: the caller is a browser that just left the sign-in page, and
+    // a JSON error body would render as raw text. It is told the same way
+    // every other failure is told.
+    res.redirect(completionUrl({ error: authService.OAuthError.UNAVAILABLE }));
+    return;
+  }
+
+  const start = await authService.startGoogleOAuth(
+    safeInternalPath(readQuery(req, "next")),
+  );
+
+  setOAuthStateCookie(res, start.state, start.maxAgeMs);
+  res.redirect(start.redirectUrl);
+};
+
+export const googleOAuthCallback: RequestHandler = async (req, res) => {
+  // Unconditional, and before anything can return: the state is single-use,
+  // so it must not survive the request that spent it — including the requests
+  // that failed, where leaving it would invite a retry against a stale value.
+  clearOAuthStateCookie(res);
+
+  const result = await authService.completeGoogleOAuth(
+    {
+      code: readQuery(req, "code"),
+      state: readQuery(req, "state"),
+      cookieState: readCookie(req, cookieNames.oauthState),
+      providerError: readQuery(req, "error"),
+    },
+    auditContextFromRequest(req),
+  );
+
+  if (result.status === "failed") {
+    res.redirect(completionUrl({ error: result.code }));
+    return;
+  }
+
+  if (result.login.status === "two_factor_required") {
+    // The same challenge cookie the password flow sets, read by the same
+    // `/2fa` page, completed by the same endpoint.
+    setTwoFactorChallengeCookie(res, result.login.challengeToken);
+    res.redirect(frontendUrl(TWO_FACTOR_PATH));
+    return;
+  }
+
+  setRefreshCookie(
+    res,
+    result.login.tokens.refreshToken,
+    result.login.tokens.refreshMaxAgeMs,
+  );
+  clearTwoFactorChallengeCookie(res);
+
+  // `next` was validated as an internal path before it was stored, and is
+  // re-validated by the page that receives it. The access token is not here,
+  // and cannot be: the completion page asks `/auth/refresh` for one.
+  res.redirect(completionUrl(result.next !== null ? { next: result.next } : undefined));
 };

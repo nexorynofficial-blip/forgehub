@@ -3,6 +3,14 @@ import { Prisma } from "@prisma/client";
 import { env } from "../../config/env.js";
 import { redis } from "../../config/redis.js";
 import { emailService } from "../../integrations/email/index.js";
+import {
+  buildAuthorizationUrl,
+  createPkcePair,
+  exchangeCodeForIdToken,
+  isGoogleOAuthConfigured,
+  verifyIdToken,
+  type GoogleIdentity,
+} from "../../integrations/oauth/google.js";
 import { AuditAction, recordAuditEvent, type AuditContext } from "../../utils/audit.js";
 import {
   assertNotLockedOut,
@@ -20,6 +28,7 @@ import {
   hashBackupCode,
   hashToken,
   parseDuration,
+  safeCompareHashes,
 } from "../../utils/tokens.js";
 import { buildOtpauthUrl, generateTotpSecret, verifyTotp } from "../../utils/totp.js";
 import {
@@ -213,11 +222,9 @@ async function sendVerificationEmail(user: {
  * caller to handle. The database constraint, not the lookup, is what
  * guarantees uniqueness.
  */
-async function createUserWithUniqueUsername(input: {
-  email: string;
-  displayName: string;
-  passwordHash: string;
-}): Promise<repo.UserWithProfile> {
+async function createUserWithUniqueUsername(
+  input: Omit<repo.CreateUserInput, "username">,
+): Promise<repo.UserWithProfile> {
   const base = usernameBase(input.displayName);
   const taken = await repo.findUsernamesStartingWith(base);
   let candidate = pickAvailableUsername(base, taken);
@@ -1023,6 +1030,500 @@ async function redeemBackupCode(
   });
 
   return true;
+}
+
+/* ── Google sign-in ─────────────────────────────────────────────────────── */
+
+/**
+ * Federated sign-in (docs/AUTHENTICATION.md §"Google OAuth").
+ *
+ * The whole point of the two functions below is that they end where every
+ * other login ends: `finalizeLogin`, the same session, the same rotating
+ * refresh token, the same audit record. Google decides *which human this is*.
+ * Nothing about what that human may then do is decided differently here —
+ * status, 2FA, and role all run through the code that already owns them.
+ *
+ * The provider's own tokens do not survive `integrations/oauth/google.ts`.
+ * Nothing in this file has a variable holding one.
+ */
+
+/**
+ * Ten minutes: long enough for a consent screen, an account chooser, and a
+ * password prompt on a phone; short enough that an abandoned transaction is
+ * gone well before anyone could find it.
+ */
+const OAUTH_STATE_TTL_SECONDS = 600;
+
+export const OAUTH_STATE_MAX_AGE_MS = OAUTH_STATE_TTL_SECONDS * 1_000;
+
+/**
+ * The failure vocabulary the frontend renders.
+ *
+ * Deliberately a closed set of opaque codes rather than messages. Everything
+ * that actually went wrong — Google's response body, the provider's error
+ * string, a stack — stays server-side; what crosses into a URL the user can
+ * read, screenshot, and paste is one of these words.
+ */
+export const OAuthError = {
+  /** The provider is switched off or incompletely configured. */
+  UNAVAILABLE: "oauth_unavailable",
+  /** The user declined at Google's consent screen. */
+  CANCELLED: "oauth_cancelled",
+  /** No state, a mismatched state, or one already spent or expired. */
+  STATE_INVALID: "oauth_state_invalid",
+  /** The authorization code could not be exchanged. */
+  EXCHANGE_FAILED: "oauth_exchange_failed",
+  /** The ID token failed verification, or lacked the claims we need. */
+  IDENTITY_INVALID: "oauth_identity_invalid",
+  /** Google does not attest that the address belongs to this user. */
+  EMAIL_UNVERIFIED: "oauth_email_unverified",
+  /** An account exists for the address but has never proven it. */
+  ACCOUNT_UNVERIFIED: "oauth_account_unverified",
+  /** The address belongs to an account already linked to another identity. */
+  ACCOUNT_CONFLICT: "oauth_account_conflict",
+  /** The linked ForgeHub account is banned or suspended. */
+  ACCOUNT_SUSPENDED: "oauth_account_suspended",
+} as const;
+
+export type OAuthErrorCode = (typeof OAuthError)[keyof typeof OAuthError];
+
+/** What the browser must be sent to, plus the state to bind it to. */
+export interface GoogleAuthorizationStart {
+  redirectUrl: string;
+  state: string;
+  maxAgeMs: number;
+}
+
+export type GoogleCallbackResult =
+  | { status: "complete"; login: LoginResult; next: string | null }
+  | { status: "failed"; code: OAuthErrorCode };
+
+/**
+ * The pending transaction, held server-side for exactly as long as the round
+ * trip takes.
+ *
+ * The PKCE verifier and the OIDC nonce live here rather than in the cookie
+ * because they are the two values that must never reach the browser: the
+ * verifier is what proves the code belongs to this transaction, and the nonce
+ * is what proves the ID token does. A signed cookie could carry them, but
+ * then "single use" would be a claim about a value the client holds instead
+ * of a row this server deletes.
+ */
+interface OAuthTransaction {
+  codeVerifier: string;
+  nonce: string;
+  next: string | null;
+}
+
+function oauthStateKey(state: string): string {
+  return `oauth:google:${hashToken(state)}`;
+}
+
+/**
+ * Starts a Google authorization.
+ *
+ * `next` has already been through `safeInternalPath` at the controller, and
+ * is stored rather than round-tripped through Google — a destination that
+ * never leaves this server cannot be edited between the two requests.
+ */
+export async function startGoogleOAuth(
+  next: string | null,
+): Promise<GoogleAuthorizationStart> {
+  const state = generateOpaqueToken();
+  const nonce = generateOpaqueToken();
+  const pkce = createPkcePair();
+
+  const transaction: OAuthTransaction = {
+    codeVerifier: pkce.verifier,
+    nonce,
+    next,
+  };
+
+  await redis.set(
+    oauthStateKey(state),
+    JSON.stringify(transaction),
+    "EX",
+    OAUTH_STATE_TTL_SECONDS,
+  );
+
+  return {
+    redirectUrl: buildAuthorizationUrl({
+      state,
+      nonce,
+      codeChallenge: pkce.challenge,
+    }),
+    state,
+    maxAgeMs: OAUTH_STATE_MAX_AGE_MS,
+  };
+}
+
+/**
+ * Reads and destroys the transaction in one step.
+ *
+ * `GETDEL` rather than get-then-delete: two callbacks arriving with the same
+ * state must not both find it. Whichever command reaches Redis first gets the
+ * value and the other gets nothing, which is what "single use" has to mean
+ * when the client is a browser that can be made to replay a URL.
+ */
+async function consumeOAuthTransaction(state: string): Promise<OAuthTransaction | null> {
+  const raw = await redis.getdel(oauthStateKey(state));
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw) as OAuthTransaction;
+  } catch {
+    return null;
+  }
+}
+
+export interface GoogleCallbackInput {
+  code: string | null;
+  state: string | null;
+  /** The value from the state cookie this server set at the start. */
+  cookieState: string | null;
+  /** Google's own `error` parameter, present when the user declined. */
+  providerError: string | null;
+}
+
+/**
+ * Completes a Google authorization.
+ *
+ * Returns a failure code rather than throwing for anything the user can
+ * cause. The caller renders these as a redirect, and an exception here would
+ * become a 500 page in the middle of a sign-in — which tells the user nothing
+ * and tells an attacker the same amount.
+ */
+export async function completeGoogleOAuth(
+  input: GoogleCallbackInput,
+  context: RequestContext,
+): Promise<GoogleCallbackResult> {
+  if (!isGoogleOAuthConfigured()) {
+    return { status: "failed", code: OAuthError.UNAVAILABLE };
+  }
+
+  if (input.providerError !== null) {
+    // `access_denied` is the user clicking "Cancel", which is not an error
+    // worth logging as one. Anything else is Google refusing, and the reason
+    // is Google's to state — it is recorded, never shown.
+    if (input.providerError !== "access_denied") {
+      logger.warn(
+        { provider: "google", providerError: input.providerError },
+        "Google returned an error at the authorization callback",
+      );
+    }
+    return { status: "failed", code: OAuthError.CANCELLED };
+  }
+
+  /*
+   * The CSRF check, and the reason the cookie exists at all. Without it, an
+   * attacker can complete an authorization with *their* Google account and
+   * feed the resulting callback URL to a victim, whose browser would then be
+   * signed into the attacker's account — a login CSRF, and the start of every
+   * "why is my data in someone else's account" incident. Binding the state to
+   * the browser that began the flow is what makes that impossible.
+   */
+  if (
+    input.state === null ||
+    input.cookieState === null ||
+    !timingSafeEqualStrings(input.state, input.cookieState)
+  ) {
+    return { status: "failed", code: OAuthError.STATE_INVALID };
+  }
+
+  const transaction = await consumeOAuthTransaction(input.state);
+
+  if (transaction === null || input.code === null) {
+    return { status: "failed", code: OAuthError.STATE_INVALID };
+  }
+
+  let identity: GoogleIdentity;
+  try {
+    const idToken = await exchangeCodeForIdToken({
+      code: input.code,
+      codeVerifier: transaction.codeVerifier,
+    });
+    identity = await verifyIdToken(idToken, transaction.nonce);
+  } catch (error) {
+    /*
+     * `error.message` only. The cause chain can hold a `fetch` failure whose
+     * message quotes the request, and this line goes to the log where the
+     * authorization code and the client secret must never appear.
+     */
+    logger.warn(
+      {
+        provider: "google",
+        reason: error instanceof Error ? error.message : "unknown",
+      },
+      "Google sign-in could not be completed",
+    );
+    return {
+      status: "failed",
+      code:
+        error instanceof Error && error.message.startsWith("Google ID token")
+          ? OAuthError.IDENTITY_INVALID
+          : OAuthError.EXCHANGE_FAILED,
+    };
+  }
+
+  /*
+   * Everything below treats the email as a *claim about ownership*, and it is
+   * only worth that if Google says it verified it. An unverified Google
+   * address is a string the user typed, and matching it against a ForgeHub
+   * account would be handing over that account to anyone who can type.
+   */
+  if (!identity.emailVerified) {
+    return { status: "failed", code: OAuthError.EMAIL_UNVERIFIED };
+  }
+
+  return resolveGoogleIdentity(identity, transaction.next, context);
+}
+
+/** Constant-time string comparison for two values of unknown length. */
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  // Hashing first makes the buffers equal-length, which `timingSafeEqual`
+  // requires — comparing raw values would throw on a length mismatch and
+  // leak the length by doing so.
+  return safeCompareHashes(hashToken(a), hashToken(b));
+}
+
+/**
+ * Turns a verified Google identity into a ForgeHub login.
+ *
+ * Three paths, in this order, and the order is the security policy:
+ *
+ *   1. **The identity is already linked.** The only lookup that proves who
+ *      this is. Email is not consulted.
+ *   2. **An account exists for the address.** Linking is allowed, but only
+ *      under the conditions in `linkToExistingAccount` below.
+ *   3. **Nobody has this address.** A new account, created verified.
+ */
+async function resolveGoogleIdentity(
+  identity: GoogleIdentity,
+  next: string | null,
+  context: RequestContext,
+): Promise<GoogleCallbackResult> {
+  const linked = await repo.findUserByOAuthAccount("google", identity.subject);
+
+  if (linked) {
+    if ((await repo.liftExpiredSuspension(linked.id, linked.status)) === "banned") {
+      return { status: "failed", code: OAuthError.ACCOUNT_SUSPENDED };
+    }
+    return { status: "complete", login: await signInAsUser(linked, context), next };
+  }
+
+  const existing = await repo.findCredentialsByEmail(identity.email);
+
+  if (existing) {
+    const failure = await linkToExistingAccount(existing, identity, context);
+    if (failure) return { status: "failed", code: failure };
+
+    return { status: "complete", login: await signInAsUser(existing, context), next };
+  }
+
+  const created = await createGoogleAccount(identity, context);
+  if (created === null) {
+    // Lost a race with a concurrent sign-up for the same address. Nothing has
+    // been written; the honest answer is "try again", which is what the
+    // conflict message says.
+    return { status: "failed", code: OAuthError.ACCOUNT_CONFLICT };
+  }
+
+  return { status: "complete", login: await signInAsUser(created, context), next };
+}
+
+/**
+ * The account-linking policy, and the only place email is allowed to decide
+ * anything.
+ *
+ * Linking a proven Google identity to an account that was created with a
+ * password is the dangerous half of OAuth, because ForgeHub lets anyone
+ * *register* an address without proving they own it. If linking ignored that,
+ * an attacker could register `victim@example.com`, wait, and the day the
+ * victim signed in with Google they would be dropped into the attacker's
+ * account — sharing it, with the attacker's password still working. The
+ * pre-registered account is the trap, and it is set before the victim has
+ * ever heard of the site.
+ *
+ * So both sides must be proven:
+ *
+ *   - **Google's side** — `email_verified` was required before this is
+ *     reached.
+ *   - **ForgeHub's side** — the existing account must already have verified
+ *     the same address by clicking the emailed link, which only its real
+ *     owner can receive.
+ *
+ * An unverified account is therefore refused rather than captured, and the
+ * user is told to verify first. That is the non-destructive choice: the
+ * alternative some products take — link anyway, void the password, revoke the
+ * sessions — resolves the conflict in the Google user's favour, but it does
+ * so by silently locking out whoever set that password, and there is no way
+ * to be sure from here which of them is the impostor.
+ */
+async function linkToExistingAccount(
+  existing: repo.UserCredentials,
+  identity: GoogleIdentity,
+  context: RequestContext,
+): Promise<OAuthErrorCode | null> {
+  const reject = async (
+    code: OAuthErrorCode,
+    reason: string,
+  ): Promise<OAuthErrorCode> => {
+    await recordAuditEvent({
+      ...context,
+      actorId: existing.id,
+      action: AuditAction.OAUTH_LINK_REJECTED,
+      targetType: "user",
+      targetId: existing.id,
+      metadata: { provider: "google", reason },
+    });
+    return code;
+  };
+
+  if ((await repo.liftExpiredSuspension(existing.id, existing.status)) === "banned") {
+    // A ban is not a login method problem, so it is not audited as one — the
+    // moderation record already says why this account cannot sign in.
+    return OAuthError.ACCOUNT_SUSPENDED;
+  }
+
+  if (!existing.emailVerified) {
+    return reject(OAuthError.ACCOUNT_UNVERIFIED, "forgehub_email_unverified");
+  }
+
+  if (await repo.hasOAuthAccount(existing.id, "google")) {
+    // Same address, different Google `sub`. Two distinct people, or one
+    // person with two Google accounts — either way this is not the identity
+    // the account was linked to, and quietly relinking would be a takeover.
+    return reject(OAuthError.ACCOUNT_CONFLICT, "already_linked_to_another_identity");
+  }
+
+  try {
+    await repo.linkOAuthAccount({
+      userId: existing.id,
+      provider: "google",
+      providerAccountId: identity.subject,
+    });
+  } catch (error) {
+    // The unique indexes, not the reads above, are what actually decide. A
+    // concurrent sign-in that linked first lands here.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return reject(OAuthError.ACCOUNT_CONFLICT, "link_conflict");
+    }
+    throw error;
+  }
+
+  await recordAuditEvent({
+    ...context,
+    actorId: existing.id,
+    action: AuditAction.OAUTH_ACCOUNT_LINKED,
+    targetType: "user",
+    targetId: existing.id,
+    metadata: { provider: "google" },
+  });
+
+  // A new way into the account is exactly the kind of change its owner should
+  // hear about unprompted — this is how they find out if it was not them.
+  await emailService.sendSecurityAlertEmail(existing.email, {
+    displayName: existing.displayName,
+    event: "Google sign-in was linked to your account",
+  });
+
+  return null;
+}
+
+/**
+ * Creates an account from a Google identity.
+ *
+ * `passwordHash: null` — there is no password, and inventing a random one to
+ * satisfy a column would leave an unknown credential on the account that
+ * nothing can ever verify and a database leak could attack. The column has
+ * always been nullable; `login` already refuses an account without a hash
+ * through its ordinary "invalid email or password" path, so an OAuth-only
+ * account leaks nothing when someone tries to guess a password for it.
+ *
+ * Returns `null` when the address was taken between the caller's lookup and
+ * this write.
+ */
+async function createGoogleAccount(
+  identity: GoogleIdentity,
+  context: RequestContext,
+): Promise<repo.UserWithProfile | null> {
+  /*
+   * `usernameBase` derives a handle from the display name and never from the
+   * email, because the handle is public in `/profile/<username>` and an email
+   * local part is frequently a real name the user did not choose to publish.
+   * The same reasoning applies to the display name itself, so an identity
+   * with no `name` claim gets a neutral placeholder rather than the address —
+   * the account settings page is where they choose what to be called.
+   */
+  const displayName = identity.name?.trim() || "New Builder";
+
+  try {
+    const user = await createUserWithUniqueUsername({
+      email: identity.email,
+      displayName,
+      passwordHash: null,
+      // Google attested this address; `completeGoogleOAuth` refused to get
+      // here otherwise. Requiring a second, emailed proof of an address the
+      // provider has already verified would be ceremony, not security.
+      emailVerified: true,
+      avatarUrl: identity.pictureUrl,
+      oauthAccount: { provider: "google", providerAccountId: identity.subject },
+    });
+
+    await recordAuditEvent({
+      ...context,
+      actorId: user.id,
+      action: AuditAction.USER_REGISTERED,
+      targetType: "user",
+      targetId: user.id,
+      metadata: { username: user.username, provider: "google" },
+    });
+
+    await recordAuditEvent({
+      ...context,
+      actorId: user.id,
+      action: AuditAction.OAUTH_ACCOUNT_LINKED,
+      targetType: "user",
+      targetId: user.id,
+      metadata: { provider: "google", atSignUp: true },
+    });
+
+    return user;
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * The shared tail: identity established, now issue a ForgeHub login.
+ *
+ * The 2FA branch is the whole reason this is a function rather than a call to
+ * `finalizeLogin`. ForgeHub's policy is that an enrolled second factor is
+ * required to sign in — `login` enforces it for passwords, and there is
+ * nothing anywhere in the codebase that exempts a login method from it. So a
+ * Google sign-in to an enrolled account stops at the same challenge and
+ * resumes through the same `/auth/2fa/challenge` endpoint. Treating Google as
+ * a substitute for the second factor would quietly downgrade every account
+ * that turned 2FA on, without telling the person who turned it on.
+ */
+async function signInAsUser(
+  user: repo.UserWithProfile,
+  context: RequestContext,
+): Promise<LoginResult> {
+  if (user.twoFactor?.enabled === true) {
+    const challengeToken = await createTwoFactorChallenge({
+      userId: user.id,
+      // No "remember me" box in a provider redirect, so the shorter of the two
+      // refresh lifetimes applies — the same default an unticked form gets.
+      rememberMe: false,
+    });
+    return { status: "two_factor_required", challengeToken };
+  }
+
+  return finalizeLogin(user, context, false);
 }
 
 export type { AuditContext };

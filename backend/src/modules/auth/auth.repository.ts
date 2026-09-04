@@ -2,6 +2,7 @@ import {
   NotificationType,
   type EmailVerificationToken,
   type ModerationStatus,
+  type OAuthProvider,
   type PasswordResetToken,
   type Prisma,
   type RefreshToken,
@@ -107,7 +108,22 @@ export interface CreateUserInput {
   email: string;
   username: string;
   displayName: string;
-  passwordHash: string;
+  /**
+   * `null` for an account created through a federated provider, which never
+   * had a password to hash. The column has always been nullable; before OAuth
+   * nothing produced a row that used it.
+   */
+  passwordHash: string | null;
+  /**
+   * Set only where the address is already proven — a provider that attests
+   * `email_verified` at sign-up. Password registration leaves this false and
+   * proves the address with an emailed token.
+   */
+  emailVerified?: boolean;
+  /** Seeded onto the new profile when the provider supplies one. */
+  avatarUrl?: string | null;
+  /** Linked in the same transaction as the user, for a federated sign-up. */
+  oauthAccount?: { provider: OAuthProvider; providerAccountId: string };
 }
 
 /**
@@ -115,10 +131,17 @@ export interface CreateUserInput {
  *
  * One transaction, because a user without settings or notification
  * preferences is a broken state that later phases would have to defend
- * against on every read. Throws Prisma `P2002` if the email or username is
- * taken — the service turns that into a conflict or a username retry.
+ * against on every read. The optional OAuth link joins that transaction for
+ * the same reason: a federated account whose provider link failed to write
+ * would be unreachable by the identity that created it, and the next sign-in
+ * would try to create a second one.
+ *
+ * Throws Prisma `P2002` if the email, the username, or the provider identity
+ * is taken — the service turns that into a conflict or a username retry.
  */
 export async function createUser(input: CreateUserInput): Promise<UserWithProfile> {
+  const verified = input.emailVerified === true;
+
   return prisma.$transaction(async (tx) => {
     const user = await tx.user.create({
       data: {
@@ -126,20 +149,80 @@ export async function createUser(input: CreateUserInput): Promise<UserWithProfil
         username: input.username,
         displayName: input.displayName,
         passwordHash: input.passwordHash,
+        emailVerified: verified,
+        ...(verified ? { emailVerifiedAt: new Date() } : {}),
         // `guest` is a frontend-only sentinel for "not signed in" and must
         // never be persisted; every real account starts as `member`.
         role: "member",
-        profile: { create: {} },
+        profile: {
+          create: input.avatarUrl != null ? { avatarUrl: input.avatarUrl } : {},
+        },
         settings: { create: {} },
         notificationPrefs: {
           create: Object.values(NotificationType).map((type) => ({ type })),
         },
+        ...(input.oauthAccount !== undefined
+          ? { oauthAccounts: { create: input.oauthAccount } }
+          : {}),
       },
       select: profileSelect,
     });
 
     return user;
   });
+}
+
+/* ── Federated identities ───────────────────────────────────────────────── */
+
+/**
+ * The primary lookup for a returning federated user: provider + subject to a
+ * ForgeHub account.
+ *
+ * Queried from the user side so `deletedAt: null` applies the same way it
+ * does on every other read in this file — closing an account leaves the link
+ * row in place, and a soft-deleted user must not be signed back in by
+ * presenting the identity that once owned it. The relation filter still
+ * resolves through the `(provider, providerAccountId)` unique index.
+ */
+export async function findUserByOAuthAccount(
+  provider: OAuthProvider,
+  providerAccountId: string,
+): Promise<UserWithProfile | null> {
+  return prisma.user.findFirst({
+    where: {
+      deletedAt: null,
+      oauthAccounts: { some: { provider, providerAccountId } },
+    },
+    select: profileSelect,
+  });
+}
+
+/** Whether this account already has an identity from this provider. */
+export async function hasOAuthAccount(
+  userId: string,
+  provider: OAuthProvider,
+): Promise<boolean> {
+  const existing = await prisma.oAuthAccount.findUnique({
+    where: { userId_provider: { userId, provider } },
+    select: { id: true },
+  });
+  return existing !== null;
+}
+
+/**
+ * Links a provider identity to an existing account.
+ *
+ * Throws Prisma `P2002` when either uniqueness rule is already satisfied by
+ * another row — the same provider identity linked elsewhere, or this account
+ * already holding one. The service turns both into a refusal; the constraint,
+ * not the read above it, is what actually decides.
+ */
+export async function linkOAuthAccount(input: {
+  userId: string;
+  provider: OAuthProvider;
+  providerAccountId: string;
+}): Promise<void> {
+  await prisma.oAuthAccount.create({ data: input });
 }
 
 export async function markEmailVerified(userId: string): Promise<void> {

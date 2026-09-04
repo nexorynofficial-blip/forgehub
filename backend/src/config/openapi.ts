@@ -451,6 +451,85 @@ const authPaths: OpenApiObject = {
     },
   },
 
+  /**
+   * Both provider routes answer with a 302, never a JSON envelope — the
+   * client is a browser mid-navigation. They are documented so the contract
+   * covers the whole mounted surface, but a generated client should not call
+   * them: the user has to see Google's consent screen.
+   */
+  "/auth/google": {
+    get: {
+      tags: [AUTH_TAG],
+      summary: "Begin Google sign-in",
+      description:
+        "Redirects the browser to Google's authorization endpoint and sets a " +
+        "short-lived, single-use state cookie. Redirects to the frontend " +
+        "completion page with an error code instead when the provider is not " +
+        "configured.",
+      parameters: [
+        {
+          name: "next",
+          in: "query",
+          required: false,
+          description:
+            "Where to land after sign-in. Accepted only as an internal path; " +
+            "anything with its own origin or scheme is discarded.",
+          schema: stringField(),
+        },
+      ],
+      responses: {
+        "302": {
+          description: "Redirect to Google, or to the frontend on a configuration error",
+        },
+        ...errorResponses("429"),
+      },
+    },
+  },
+
+  "/auth/google/callback": {
+    get: {
+      tags: [AUTH_TAG],
+      summary: "Complete Google sign-in",
+      description:
+        "Google's redirect target. Validates state, exchanges the code " +
+        "server-to-server, and issues an ordinary ForgeHub session — the same " +
+        "refresh cookie the password flow sets. No token of any kind appears " +
+        "in the redirect URL; the frontend calls /auth/refresh for its access " +
+        "token. An account with two-factor enabled is redirected to the 2FA " +
+        "page instead, carrying the usual challenge cookie.",
+      parameters: [
+        {
+          name: "code",
+          in: "query",
+          required: false,
+          description: "Google's authorization code",
+          schema: stringField(),
+        },
+        {
+          name: "state",
+          in: "query",
+          required: false,
+          description: "Must match the state cookie set at the start of the flow",
+          schema: stringField(),
+        },
+        {
+          name: "error",
+          in: "query",
+          required: false,
+          description: "Google's error parameter, present when the user declines",
+          schema: stringField(),
+        },
+      ],
+      responses: {
+        "302": {
+          description:
+            "Redirect to the frontend completion page, the 2FA page, or the " +
+            "completion page with an opaque error code",
+        },
+      },
+    },
+  },
+
   "/auth/2fa/challenge": {
     post: {
       tags: [TWO_FACTOR_TAG],

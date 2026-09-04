@@ -41,6 +41,13 @@ enum UserRole {
   platform_admin
 }
 
+/// Federated identity providers ForgeHub accepts. An enum rather than a free
+/// string so an unrecognised provider cannot be written by a typo, and so
+/// adding one is a reviewed migration rather than a silent new row shape.
+enum OAuthProvider {
+  google
+}
+
 /// Moderation state, orthogonal to UserRole (`types/admin.ts`). A platform
 /// admin can be active/banned independently of their permissions.
 enum ModerationStatus {
@@ -240,6 +247,7 @@ model User {
   sessions            Session[]
   emailTokens         EmailVerificationToken[]
   passwordResetTokens PasswordResetToken[]
+  oauthAccounts       OAuthAccount[]
 
   following Follow[] @relation("Follower")
   followers Follow[] @relation("Following")
@@ -463,6 +471,39 @@ model TwoFactorCredential {
 
 /// ARCHITECTURE §10. Self-follows are rejected in the service layer (Postgres
 /// cannot express `followerId <> followingId` as a Prisma-level constraint).
+/// A federated identity linked to a ForgeHub account.
+///
+/// Keyed on the provider's immutable subject identifier, never on the email
+/// address: Google users can change the address on their account, and a
+/// linkage that followed the email would silently follow it to whoever the
+/// address belongs to next.
+///
+/// No provider access token, refresh token, or ID token is stored. Google is
+/// used here for identity only — nothing in ForgeHub calls a Google API after
+/// the callback — so keeping those would be holding a credential with no
+/// purpose (BACKEND_TRD.md §13).
+model OAuthAccount {
+  id                String        @id @default(uuid()) @db.Uuid
+  userId            String        @db.Uuid
+  provider          OAuthProvider
+  /// The provider's `sub` claim.
+  providerAccountId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// One ForgeHub account per provider identity — the constraint that makes
+  /// "find the user for this Google sub" a single unambiguous row.
+  @@unique([provider, providerAccountId])
+  /// …and at most one identity per provider per account, so a second Google
+  /// identity cannot be quietly attached to an account that already has one.
+  @@unique([userId, provider])
+  @@index([userId])
+  @@map("oauth_accounts")
+}
+
 model Follow {
   id          String   @id @default(uuid()) @db.Uuid
   followerId  String   @db.Uuid

@@ -60,8 +60,64 @@ export function clearTwoFactorChallengeCookie(res: Response): void {
   res.clearCookie(env.TWO_FACTOR_COOKIE_NAME, baseOptions());
 }
 
+/* ── OAuth state ────────────────────────────────────────────────────────── */
+
+/**
+ * The OAuth callback is a **cross-site top-level navigation**: Google issues
+ * the redirect, so as far as the browser is concerned the request originates
+ * from accounts.google.com. `SameSite=Strict` withholds a cookie on exactly
+ * that request, which would make every sign-in fail its state check with no
+ * visible cause — so a deployment that chose `strict` gets `lax` here, which
+ * is the strictest setting that survives the round trip. `none` is left alone:
+ * it is what a cross-origin frontend needs, and it is already paired with
+ * `Secure`.
+ */
+const oauthSameSite = env.COOKIE_SAMESITE === "strict" ? "lax" : env.COOKIE_SAMESITE;
+
+/**
+ * Scoped to the OAuth routes alone — narrower than `AUTH_COOKIE_PATH`, so this
+ * short-lived value is not attached to `/refresh`, `/logout`, or any other
+ * credential endpoint that has no business seeing it.
+ */
+const oauthStatePath = env.AUTH_COOKIE_PATH.endsWith("/")
+  ? `${env.AUTH_COOKIE_PATH}google`
+  : `${env.AUTH_COOKIE_PATH}/google`;
+
+function oauthStateOptions(): CookieOptions {
+  return {
+    httpOnly: true,
+    secure,
+    sameSite: oauthSameSite,
+    path: oauthStatePath,
+    ...(env.COOKIE_DOMAIN !== undefined ? { domain: env.COOKIE_DOMAIN } : {}),
+  };
+}
+
+export function setOAuthStateCookie(
+  res: Response,
+  state: string,
+  maxAgeMs: number,
+): void {
+  res.cookie(env.OAUTH_STATE_COOKIE_NAME, state, {
+    ...oauthStateOptions(),
+    maxAge: maxAgeMs,
+  });
+}
+
+/** Called on every callback, success or failure — the state is single-use. */
+export function clearOAuthStateCookie(res: Response): void {
+  res.clearCookie(env.OAUTH_STATE_COOKIE_NAME, oauthStateOptions());
+}
+
 /** Cookie names, exported so tests and the OpenAPI document stay in sync. */
 export const cookieNames = {
   refresh: env.REFRESH_COOKIE_NAME,
   twoFactor: env.TWO_FACTOR_COOKIE_NAME,
+  oauthState: env.OAUTH_STATE_COOKIE_NAME,
+} as const;
+
+/** Exported for the deployment tests, which assert the scoping above. */
+export const cookiePaths = {
+  auth: env.AUTH_COOKIE_PATH,
+  oauthState: oauthStatePath,
 } as const;

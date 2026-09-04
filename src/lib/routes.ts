@@ -19,6 +19,10 @@ export const routes = {
     resetPassword: "/reset-password",
     verifyEmail: "/verify-email",
     twoFactor: "/2fa",
+    // Where the backend sends the browser after Google, success or failure.
+    // The backend names the same path in `auth.frontend-routes.ts`; the two
+    // must move together.
+    googleCallback: "/auth/google/callback",
   },
 
   dashboard: "/dashboard",

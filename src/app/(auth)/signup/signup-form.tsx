@@ -14,7 +14,6 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { AuthHeading } from "@/components/auth/auth-heading";
 import { OAuthButtons } from "@/components/auth/oauth-buttons";
@@ -83,12 +82,6 @@ export function SignupForm() {
       />
 
       <OAuthButtons />
-
-      <div className="my-6 flex items-center gap-3">
-        <Separator className="flex-1" />
-        <span className="text-muted-foreground text-xs">OR</span>
-        <Separator className="flex-1" />
-      </div>
 
       <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex flex-col gap-5">
         <div className="flex flex-col gap-2">
