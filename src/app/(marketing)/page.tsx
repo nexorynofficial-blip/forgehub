@@ -1,7 +1,9 @@
 import { CommunitiesSection } from "@/components/marketing/communities-section";
 import { CtaSection } from "@/components/marketing/cta-section";
+import { FaqSection } from "@/components/marketing/faq-section";
 import { FeaturesSection } from "@/components/marketing/features-section";
 import { HeroSection } from "@/components/marketing/hero-section";
+import { HowItWorksSection } from "@/components/marketing/how-it-works-section";
 import { LiveDemoSection } from "@/components/marketing/live-demo-section";
 import { TestimonialsSection } from "@/components/marketing/testimonials-section";
 
@@ -19,10 +21,17 @@ export default function LandingPage() {
   return (
     <>
       <HeroSection />
+      {/* Sequence before capability: "how does this work" is the question a
+          visitor has immediately after the hero, and the feature grid reads
+          better once the three steps have framed it. */}
+      <HowItWorksSection />
       <FeaturesSection />
       <LiveDemoSection />
       <CommunitiesSection />
       <TestimonialsSection />
+      {/* Objections last, right before the ask — the CTA is more persuasive
+          after the doubts have been answered than before them. */}
+      <FaqSection />
       <CtaSection />
     </>
   );

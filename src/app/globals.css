@@ -48,6 +48,11 @@
   /* Elevation (UI_UX.md §2 "Soft Shadows", "Floating Cards") */
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px -12px rgb(0 0 0 / 60%);
   --shadow-floating: 0 24px 64px -16px rgb(0 0 0 / 70%);
+  /* Film grain. A dark canvas this large reads as flat printer black without
+     it; the grain gives the violet bloom below something to sit in. Declared
+     as a token so the one texture is shared rather than re-encoded per use. */
+  --noise-texture: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPScyNDAnIGhlaWdodD0nMjQwJz48ZmlsdGVyIGlkPSduJz48ZmVUdXJidWxlbmNlIHR5cGU9J2ZyYWN0YWxOb2lzZScgYmFzZUZyZXF1ZW5jeT0nMC44JyBudW1PY3RhdmVzPSc0JyBzdGl0Y2hUaWxlcz0nc3RpdGNoJy8+PGZlQ29sb3JNYXRyaXggdHlwZT0nc2F0dXJhdGUnIHZhbHVlcz0nMCcvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPScyNDAnIGhlaWdodD0nMjQwJyBmaWx0ZXI9InVybCglMjNuKSIvPjwvc3ZnPg==");
+
   --shadow-glow-primary:
     0 0 0 1px rgb(124 92 255 / 20%), 0 8px 32px -8px rgb(124 92 255 / 35%);
 }
@@ -153,18 +158,30 @@
 }
 
 @layer utilities {
-  /* Glassmorphism (UI_UX.md §2) */
+  /* Glassmorphism (UI_UX.md §2).
+
+     Do not add `-webkit-backdrop-filter` back alongside these. It was here,
+     and pairing it with the standard property made Lightning CSS (which Next
+     runs over this file) emit a rule with *neither* — verified in the browser,
+     where `.glass` and `.glass-strong` computed to `backdrop-filter: none` and
+     their own `cssText` listed only background and border. Either declaration
+     alone survives; together they cancel.
+
+     So until now every glass surface on the site was a flat translucent fill
+     with no blur behind it. Most got away with it; the sticky header did not,
+     because unblurred content at 80% opacity is still legible and card text
+     scrolling underneath could be read through the nav labels. Lightning CSS
+     adds whatever prefix the browser targets need on its own — that is its
+     job, and hand-writing one is what broke it. */
   .glass {
     background: rgb(24 24 27 / 60%);
     backdrop-filter: blur(20px) saturate(140%);
-    -webkit-backdrop-filter: blur(20px) saturate(140%);
     border: 1px solid var(--color-border);
   }
 
   .glass-strong {
     background: rgb(24 24 27 / 80%);
     backdrop-filter: blur(28px) saturate(160%);
-    -webkit-backdrop-filter: blur(28px) saturate(160%);
     border: 1px solid var(--color-border-strong);
   }
 
@@ -223,6 +240,72 @@
     animation: forge-fade-out 100ms ease-in;
   }
 
+  /* ── Atmosphere ───────────────────────────────────────────────────────────
+     Depth for the dark canvas. Three cooperating layers, each doing one job:
+     the Aurora component puts colored light behind the content, "grain" breaks
+     up the resulting gradient banding, and "vignette" pulls the eye back to
+     centre. Each is decorative and pointer-transparent. */
+
+  .grain::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: var(--noise-texture);
+    /* Low enough to read as texture rather than static. */
+    opacity: 0.045;
+    pointer-events: none;
+    mix-blend-mode: overlay;
+  }
+
+  .vignette::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    /* Two passes. The radial pulls the frame's corners back to the canvas
+       colour so the bloom cannot lift the whole surface to an even lavender;
+       the linear re-seats the bottom edge on the page background so the
+       section hands off to whatever follows it without a seam. */
+    background:
+      radial-gradient(
+        ellipse 70% 55% at 50% 38%,
+        transparent 0%,
+        rgb(9 9 11 / 45%) 55%,
+        rgb(9 9 11 / 88%) 100%
+      ),
+      linear-gradient(to top, var(--color-background) 0%, transparent 28%);
+  }
+
+  /* A hairline that is brighter along the top edge than the bottom, the way a
+     raised surface catches light. Replaces a uniform 1px border, which is what
+     makes a stack of cards read as flat rectangles. */
+  .raised {
+    background:
+      linear-gradient(180deg, rgb(255 255 255 / 4%) 0%, transparent 42%),
+      var(--color-card);
+    border: 1px solid var(--color-border);
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 6%),
+      var(--shadow-soft);
+  }
+
+  /* Violet rim, for the one element per view that should feel lit. */
+  .rim-primary {
+    box-shadow:
+      inset 0 1px 0 0 rgb(255 255 255 / 10%),
+      0 0 0 1px rgb(124 92 255 / 22%),
+      0 18px 48px -18px rgb(124 92 255 / 45%);
+  }
+
+  /* Slow drift, so the bloom is never quite the same shape twice. */
+  .animate-drift {
+    animation: forge-drift 26s ease-in-out infinite;
+  }
+
+  .animate-drift-slow {
+    animation: forge-drift 38s ease-in-out infinite reverse;
+  }
+
   /* UI_UX.md §8 "Animated Banner" — slow drift on the profile banner's
      gradient, used when no real bannerUrl exists yet. */
   .animate-gradient-shift {
@@ -278,5 +361,18 @@
   }
   50% {
     background-position: 100% 50%;
+  }
+}
+
+@keyframes forge-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  33% {
+    transform: translate3d(4%, -3%, 0) scale(1.08);
+  }
+  66% {
+    transform: translate3d(-3%, 3%, 0) scale(0.95);
   }
 }

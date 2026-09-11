@@ -1,0 +1,10 @@
+# The Vercel project is the Next.js frontend only. The API deploys separately:
+# it runs a Socket.IO server, which needs a long-lived process that Vercel's
+# serverless functions cannot provide. Nothing under src/ imports from backend/.
+backend/
+
+# Never upload env files. A `vercel` CLI deploy uploads the working folder,
+# not the git tree — so .gitignore does not protect you here, and without this
+# line the local .env.local would be sent to Vercel's build servers with the
+# code. Production values belong in the Vercel project's environment settings.
+.env*

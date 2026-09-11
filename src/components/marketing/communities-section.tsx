@@ -10,6 +10,7 @@ import { routes } from "@/lib/routes";
 import { getFeaturedCommunities } from "@/lib/services/marketing-service";
 import { Container } from "@/components/layout/container";
 import { Section } from "@/components/layout/section";
+import { SectionHeading } from "@/components/layout/section-heading";
 import { RevealOnScroll } from "@/components/motion/reveal-on-scroll";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,15 +30,12 @@ export function CommunitiesSection() {
 
       <Container className="grid grid-cols-1 items-start gap-12 lg:grid-cols-[1.5fr_1fr]">
         <div>
-          <RevealOnScroll blur>
-            <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">
-              Find your community
-            </h2>
-            <p className="text-muted-foreground mt-4 max-w-xl text-lg">
-              Join a community built around what you&apos;re making, not just who you
-              follow.
-            </p>
-          </RevealOnScroll>
+          <SectionHeading
+            eyebrow="Communities"
+            title="Find your community"
+            lede="Join a community built around what you're making, not just who you follow."
+            align="start"
+          />
 
           <div className="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2">
             {isLoading || !communities

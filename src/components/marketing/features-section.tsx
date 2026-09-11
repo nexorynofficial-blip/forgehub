@@ -13,6 +13,7 @@ import type { LucideIcon } from "lucide-react";
 
 import { Container } from "@/components/layout/container";
 import { Section } from "@/components/layout/section";
+import { SectionHeading } from "@/components/layout/section-heading";
 import { RevealOnScroll } from "@/components/motion/reveal-on-scroll";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AmbientGlow } from "@/components/marketing/ambient-glow";
@@ -69,14 +70,11 @@ export function FeaturesSection() {
       <AmbientGlow variant="secondary" className="-top-32 -right-40" />
 
       <Container>
-        <RevealOnScroll blur className="mx-auto max-w-2xl text-center">
-          <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">
-            Everything you need to build in public
-          </h2>
-          <p className="text-muted-foreground mt-4 text-lg">
-            One platform for the whole loop — from first commit to launch day.
-          </p>
-        </RevealOnScroll>
+        <SectionHeading
+          eyebrow="Features"
+          title="Everything you need to build in public"
+          lede="One platform for the whole loop — from first commit to launch day."
+        />
 
         <div className="mt-16 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map((feature, index) => (

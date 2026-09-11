@@ -8,6 +8,7 @@ import { mockPosts } from "@/lib/mock/posts";
 import type { MessageWithSender } from "@/types";
 import { Container } from "@/components/layout/container";
 import { Section } from "@/components/layout/section";
+import { SectionHeading } from "@/components/layout/section-heading";
 import { AmbientGlow } from "@/components/marketing/ambient-glow";
 import { FadeIn } from "@/components/motion/fade-in";
 import { RevealOnScroll } from "@/components/motion/reveal-on-scroll";
@@ -85,15 +86,11 @@ export function LiveDemoSection() {
       <AmbientGlow variant="primary" className="top-0 left-1/2 -translate-x-1/2" />
 
       <Container>
-        <RevealOnScroll blur className="mx-auto max-w-2xl text-center">
-          <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">
-            See ForgeHub in action
-          </h2>
-          <p className="text-muted-foreground mt-4 text-lg">
-            This isn&apos;t a screenshot — it&apos;s the real interface, running on sample
-            data. Switch tabs to look around.
-          </p>
-        </RevealOnScroll>
+        <SectionHeading
+          eyebrow="Live demo"
+          title="See ForgeHub in action"
+          lede="This isn't a screenshot — it's the real interface, running on sample data. Switch tabs to look around."
+        />
 
         <RevealOnScroll delay={0.1} className="mx-auto mt-12 max-w-xl">
           <div className="glass-strong overflow-hidden rounded-lg shadow-[var(--shadow-floating)]">

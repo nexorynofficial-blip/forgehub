@@ -7,6 +7,7 @@ import { Quote } from "lucide-react";
 import { getTestimonials } from "@/lib/services/marketing-service";
 import { Container } from "@/components/layout/container";
 import { Section } from "@/components/layout/section";
+import { SectionHeading } from "@/components/layout/section-heading";
 import { AmbientGlow } from "@/components/marketing/ambient-glow";
 import { RevealOnScroll } from "@/components/motion/reveal-on-scroll";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -24,14 +25,11 @@ export function TestimonialsSection() {
       <AmbientGlow variant="primary" className="-bottom-40 -left-32" />
 
       <Container>
-        <RevealOnScroll blur className="mx-auto max-w-2xl text-center">
-          <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">
-            Builders are already here
-          </h2>
-          <p className="text-muted-foreground mt-4 text-lg">
-            Real people, real progress — not case studies written by marketing.
-          </p>
-        </RevealOnScroll>
+        <SectionHeading
+          eyebrow="Testimonials"
+          title="Builders are already here"
+          lede="Real people, real progress — not case studies written by marketing."
+        />
 
         <div className="mt-16 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {isLoading || !testimonials
