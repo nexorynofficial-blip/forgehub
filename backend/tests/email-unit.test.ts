@@ -378,6 +378,37 @@ describe("Email environment validation", () => {
     );
   });
 
+  it("accepts the console transport in production only with the explicit opt-in", () => {
+    const parsed = parseEnv({
+      ...REQUIRED,
+      NODE_ENV: "production",
+      EMAIL_CONSOLE_IN_PRODUCTION: "true",
+    });
+    expect(parsed.EMAIL_PROVIDER).toBe("console");
+    expect(parsed.EMAIL_CONSOLE_IN_PRODUCTION).toBe(true);
+  });
+
+  it("keeps refusing console in production unless the opt-in is exactly true", () => {
+    // Anything short of an explicit "true" leaves the default refusal in
+    // place — the flag cannot be half-set into disabling the guard.
+    for (const optIn of ["false", "", "   "]) {
+      expect(() =>
+        parseEnv({
+          ...REQUIRED,
+          NODE_ENV: "production",
+          EMAIL_CONSOLE_IN_PRODUCTION: optIn,
+        }),
+      ).toThrow(/EMAIL_PROVIDER/);
+    }
+    expect(() =>
+      parseEnv({
+        ...REQUIRED,
+        NODE_ENV: "production",
+        EMAIL_CONSOLE_IN_PRODUCTION: "yes",
+      }),
+    ).toThrow();
+  });
+
   it("accepts a configured resend transport in production", () => {
     expect(parseEnv({ ...RESEND, NODE_ENV: "production" }).EMAIL_PROVIDER).toBe("resend");
   });

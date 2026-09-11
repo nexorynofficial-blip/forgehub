@@ -163,6 +163,27 @@ const envSchema = z.object({
   EMAIL_PROVIDER: z.enum(["console", "resend"]).default("console"),
 
   /**
+   * Explicit opt-in to run production on the console transport, which in
+   * production delivers nothing: verification and password-reset messages are
+   * dropped (the console provider logs that it dropped one, never the token).
+   *
+   * The rule below still refuses `console` in production by default — an
+   * accidental configuration fails the boot, which is the point of it. This
+   * flag exists for a deliberate one: a deployment that must run before a mail
+   * provider is set up, where the operator accepts that no email is sent.
+   * Sign-in, including Google sign-in, never depends on email. The choice
+   * is visible as a setting on the host and logged at every boot, so it
+   * cannot be forgotten silently. Remove it once RESEND_API_KEY is set.
+   */
+  EMAIL_CONSOLE_IN_PRODUCTION: z
+    .preprocess(
+      (value) =>
+        typeof value === "string" && value.trim().length === 0 ? undefined : value,
+      z.enum(["true", "false"]).default("false"),
+    )
+    .transform((value) => value === "true"),
+
+  /**
    * The sender address. Resend delivers only from a domain verified in the
    * Resend dashboard, so the shipped default is refused when the resend
    * transport is selected — see `DEFAULT_EMAIL_FROM` below.
@@ -395,12 +416,16 @@ const envSchemaWithRules = envSchema.superRefine((value, ctx) => {
     }
   }
 
-  if (value.NODE_ENV === "production" && value.EMAIL_PROVIDER === "console") {
+  if (
+    value.NODE_ENV === "production" &&
+    value.EMAIL_PROVIDER === "console" &&
+    !value.EMAIL_CONSOLE_IN_PRODUCTION
+  ) {
     ctx.addIssue({
       code: "custom",
       path: ["EMAIL_PROVIDER"],
       message:
-        "cannot be 'console' in production — it sends nothing. Set EMAIL_PROVIDER=resend and supply RESEND_API_KEY",
+        "cannot be 'console' in production — it sends nothing. Set EMAIL_PROVIDER=resend and supply RESEND_API_KEY (or, to run deliberately without email, EMAIL_CONSOLE_IN_PRODUCTION=true)",
     });
   }
 });

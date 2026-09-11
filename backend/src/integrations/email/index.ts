@@ -1,4 +1,5 @@
-import { env } from "../../config/env.js";
+import { env, isProduction } from "../../config/env.js";
+import { logger } from "../../utils/logger.js";
 import { ConsoleEmailProvider } from "./console.provider.js";
 import { EmailService } from "./email.service.js";
 import type { EmailProvider } from "./email.types.js";
@@ -14,6 +15,15 @@ import { ResendEmailProvider } from "./resend.provider.js";
 function createProvider(): EmailProvider {
   switch (env.EMAIL_PROVIDER) {
     case "console":
+      // Only reachable in production through EMAIL_CONSOLE_IN_PRODUCTION —
+      // `config/env.ts` refuses it otherwise. Said at every boot so a
+      // deployment knowingly running without email never looks healthy by
+      // accident.
+      if (isProduction) {
+        logger.warn(
+          "EMAIL_CONSOLE_IN_PRODUCTION is set: no email will be delivered (verification and password-reset messages are dropped). Configure EMAIL_PROVIDER=resend to send mail.",
+        );
+      }
       return new ConsoleEmailProvider();
     case "resend": {
       /*
