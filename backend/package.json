@@ -23,7 +23,8 @@
     "db:reset": "prisma migrate reset",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f backend"
+    "docker:logs": "docker compose logs -f backend",
+    "vercel-build": "prisma generate && tsc -p tsconfig.build.json"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -31,6 +32,7 @@
   "dependencies": {
     "@node-rs/argon2": "^2.1.0",
     "@prisma/client": "^6.19.1",
+    "@socket.io/redis-adapter": "^8.3.0",
     "compression": "^1.8.1",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",

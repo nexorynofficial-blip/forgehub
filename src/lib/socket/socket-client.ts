@@ -34,6 +34,13 @@ export function getSocket(): Socket {
     // failed handshake.
     autoConnect: false,
     withCredentials: true,
+    // WebSocket from the first request, skipping Socket.IO's default HTTP
+    // long-polling start. The backend runs on Vercel Functions, where each
+    // HTTP request can land on a different instance: a polling session's
+    // follow-up requests would reach instances that never saw its handshake.
+    // A WebSocket is pinned to the instance that accepted it. Vercel's
+    // docs list this setting as required for Socket.IO.
+    transports: ["websocket"],
     // Socket.IO's own backoff. Reconnection is left on because a dropped
     // connection is normal (sleep, tunnel, flaky wifi) and re-running the
     // handshake is exactly the right recovery.

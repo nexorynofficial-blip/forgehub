@@ -1,0 +1,8 @@
+# Real secrets live in .env. A `vercel` CLI deploy uploads this folder as it is
+# on disk — .gitignore does not apply — so without this line they would be sent
+# to Vercel's build servers. Production values come from project settings.
+.env*
+
+# Rebuilt on Vercel by `npm run vercel-build`; a stale local copy must not ship.
+dist/
+node_modules/

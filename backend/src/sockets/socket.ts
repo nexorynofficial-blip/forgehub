@@ -1,7 +1,10 @@
 import type { Server as HttpServer } from "node:http";
+import { createAdapter } from "@socket.io/redis-adapter";
+import type { Redis } from "ioredis";
 import { Server as SocketIOServer, type Socket } from "socket.io";
 
 import { env } from "../config/env.js";
+import { createRedisClient } from "../config/redis.js";
 import { logger } from "../utils/logger.js";
 import { authenticateSocket, userRoom, type AuthenticatedSocket } from "./auth.socket.js";
 import { registerMessageHandlers } from "./message.socket.js";
@@ -18,6 +21,8 @@ import { registerPresenceHandlers, stopPresenceTracking } from "./presence.socke
  */
 
 let io: SocketIOServer | null = null;
+/** The adapter's two dedicated connections, closed with the server. */
+let adapterClients: [Redis, Redis] | null = null;
 
 /**
  * Runs only for sockets that passed `authenticateSocket`, so
@@ -66,6 +71,34 @@ export function createSocketServer(httpServer: HttpServer): SocketIOServer {
     pingInterval: 25_000,
   });
 
+  /*
+    Rooms shared through Redis rather than held in this process's memory.
+
+    Every emit in the app is addressed to a user room — `io.to(userRoom(id))`.
+    With the default in-memory adapter, that reaches only sockets connected to
+    *this* process. On a single long-running server that is every socket, so
+    it never mattered. On Vercel it is not: connections spread across function
+    instances, and a message sent over REST lands on whichever instance took
+    that request — usually not the one holding the recipient's socket. The
+    emit then reaches nobody, with no error anywhere.
+
+    The adapter publishes each emit to Redis, and every instance delivers it
+    to its own sockets in that room. It needs two dedicated connections: a
+    client in subscriber mode cannot issue ordinary commands, which is why
+    `createRedisClient()` exists.
+  */
+  //
+  // Both connect eagerly and queue while connecting — the opposite of the
+  // shared client's lazy, fail-fast settings. Those suit request-path
+  // commands; here the adapter subscribes the moment it is constructed, and
+  // with no offline queue that subscribe is rejected before any connection
+  // exists. Not `duplicate()`, which would copy exactly those settings.
+  const adapterOptions = { lazyConnect: false, enableOfflineQueue: true };
+  const pubClient = createRedisClient(adapterOptions);
+  const subClient = createRedisClient(adapterOptions);
+  adapterClients = [pubClient, subClient];
+  io.adapter(createAdapter(pubClient, subClient));
+
   // Registered before the connection handler so an unauthenticated socket is
   // rejected during the handshake and never reaches application code.
   io.use((socket, next) => {
@@ -113,5 +146,9 @@ export async function closeSocketServer(): Promise<void> {
   io.disconnectSockets(true);
   await io.close();
   io = null;
+  if (adapterClients) {
+    await Promise.allSettled(adapterClients.map((client) => client.quit()));
+    adapterClients = null;
+  }
   logger.info("Socket.IO server closed");
 }

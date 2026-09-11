@@ -37,8 +37,15 @@ redis.on("reconnecting", () => {
  * dedicated connections — a client in subscriber mode cannot issue normal
  * commands. This factory keeps those consistent with the shared config.
  */
-export function createRedisClient(): Redis {
-  return new Redis(env.REDIS_URL, options);
+export function createRedisClient(overrides: Partial<RedisOptions> = {}): Redis {
+  const client = new Redis(env.REDIS_URL, { ...options, ...overrides });
+  // Every client needs its own listener. An EventEmitter with no `error`
+  // handler throws the event instead, so a single dropped connection would
+  // crash the process rather than trigger ioredis's own reconnect.
+  client.on("error", (error: Error) => {
+    logger.error({ err: error }, "Redis client error (dedicated connection)");
+  });
+  return client;
 }
 
 export async function connectRedis(): Promise<void> {
